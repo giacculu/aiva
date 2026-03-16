@@ -1,204 +1,267 @@
 """
-AIVA 2.0 – GESTIONE INTERESSI
-Gli interessi di AIVA evolvono nel tempo.
-Nuove passioni emergono, altre svaniscono.
+Interessi dinamici: cosa piace a AIVA in questo periodo
 """
-
-import numpy as np
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
-from collections import defaultdict
-from loguru import logger
-import json
-from pathlib import Path
 import random
+import math
+from typing import List, Dict, Set, Optional, Tuple
+from datetime import datetime, timedelta
+from loguru import logger
 
-class InterestManager:
+class Interests:
     """
-    Gestisce gli interessi di AIVA.
-    Ogni interesse ha un livello (0-1) che cambia nel tempo.
+    Gestisce gli interessi di AIVA, che evolvono nel tempo
+    in base alle conversazioni e al caso.
     """
     
-    # Lista di possibili interessi
-    INTEREST_CATEGORIES = [
-        "musica", "cinema", "arte", "letteratura", "poesia",
-        "tecnologia", "scienza", "filoAIVA", "psicologia", "società",
-        "viaggi", "cucina", "moda", "sport", "fitness",
-        "natura", "animali", "giardinaggio", "ecologia",
-        "storia", "politica", "attualità",
-        "spiritualità", "meditazione", "benessere",
-        "giochi", "videogiochi", "fotografia",
-        "relazioni", "amore", "amicizia",
-        "sogni", "fantasia", "creatività"
-    ]
+    # Interessi possibili (categorie)
+    INTEREST_CATEGORIES = {
+        'musica': ['pop', 'rock', 'classica', 'jazz', 'indie', 'rap'],
+        'cinema': ['film', 'serie tv', 'documentari', 'animazione'],
+        'libri': ['romanzi', 'poesia', 'fantascienza', 'gialli'],
+        'arte': ['pittura', 'fotografia', 'scultura', 'mostre'],
+        'cucina': ['dolci', 'pasta', 'pizza', 'cucina internazionale'],
+        'viaggi': ['mare', 'montagna', 'città', 'avventura'],
+        'sport': ['calcio', 'nuoto', 'yoga', 'corsa', 'palestra'],
+        'tecnologia': ['AI', 'gadget', 'software', 'innovazione'],
+        'natura': ['animali', 'piante', 'ecologia', 'giardinaggio'],
+        'benessere': ['meditazione', 'mindfulness', 'spa', 'relax'],
+        'moda': ['vestiti', 'tendenze', 'makeup', 'accessori'],
+        'gioco': ['videogiochi', 'giochi da tavolo', 'puzzle'],
+    }
     
-    # Interessi base (sempre presenti)
-    CORE_INTERESTS = ["relazioni", "musica", "psicologia"]
-    
-    def __init__(self, data_path: str = "data/interests.json"):
-        """
-        Inizializza il gestore interessi.
-        """
-        self.data_path = Path(data_path)
-        self.data_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self):
+        # Interessi correnti con peso (0-1)
+        self.current = {}
         
-        self.interests = self._load_data()
+        # Inizializza con alcuni interessi casuali
+        self._initialize_random()
+        
+        # Cronologia cambiamenti
+        self.history = []
+        
+        # Ultimo aggiornamento
         self.last_update = datetime.now()
         
-        logger.info("🎯 Interest Manager inizializzato")
+        logger.debug(f"🎯 Interessi inizializzati: {list(self.current.keys())}")
     
-    def _load_data(self) -> Dict:
-        """Carica interessi"""
-        if self.data_path.exists():
-            try:
-                with open(self.data_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                return self._initial_interests()
-        return self._initial_interests()
-    
-    def _initial_interests(self) -> Dict:
-        """Interessi iniziali"""
-        interests = {}
+    def _initialize_random(self, count: int = 5):
+        """Inizializza con interessi casuali."""
+        all_categories = list(self.INTEREST_CATEGORIES.keys())
+        selected = random.sample(all_categories, min(count, len(all_categories)))
         
-        # Core interests sempre alti
-        for cat in self.CORE_INTERESTS:
-            interests[cat] = random.uniform(0.6, 0.8)
-        
-        # Altri interessi casuali
-        others = [c for c in self.INTEREST_CATEGORIES if c not in self.CORE_INTERESTS]
-        for cat in random.sample(others, 10):
-            interests[cat] = random.uniform(0.2, 0.5)
-        
-        return {
-            "levels": interests,
-            "history": [],
-            "last_update": datetime.now().isoformat()
-        }
+        for cat in selected:
+            # Scegli un sotto-interesse casuale
+            sub = random.choice(self.INTEREST_CATEGORIES[cat])
+            self.current[f"{cat}:{sub}"] = random.uniform(0.3, 0.8)
     
-    def _save_data(self):
-        """Salva interessi"""
-        self.interests["last_update"] = datetime.now().isoformat()
-        try:
-            with open(self.data_path, 'w', encoding='utf-8') as f:
-                json.dump(self.interests, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"❌ Errore salvataggio interessi: {e}")
-    
-    def update(self, hours_passed: Optional[float] = None):
+    def update(self, hours_passed: Optional[float] = None) -> None:
         """
-        Aggiorna gli interessi nel tempo.
+        Aggiorna gli interessi in base al tempo passato.
         """
         if hours_passed is None:
             now = datetime.now()
-            last = datetime.fromisoformat(self.interests["last_update"])
-            hours_passed = (now - last).total_seconds() / 3600
+            hours_passed = (now - self.last_update).total_seconds() / 3600
             self.last_update = now
         
-        if hours_passed <= 0:
-            return
+        # Decadimento naturale degli interessi
+        decay = hours_passed * 0.01  # 1% all'ora
         
-        # Ogni interesse cambia leggermente
-        for cat in self.interests["levels"]:
-            # Drift casuale
-            drift = random.uniform(-0.02, 0.02) * hours_passed
-            self.interests["levels"][cat] = max(0.1, min(1.0, 
-                self.interests["levels"][cat] + drift))
+        for interest in list(self.current.keys()):
+            self.current[interest] = max(0.0, self.current[interest] - decay * random.uniform(0.5, 1.5))
+            
+            # Rimuovi interessi scesi sotto soglia
+            if self.current[interest] < 0.1:
+                del self.current[interest]
+                self.history.append({
+                    'timestamp': datetime.now(),
+                    'type': 'lost',
+                    'interest': interest
+                })
         
-        # Ogni tanto emerge un nuovo interesse
-        if random.random() < 0.01 * hours_passed:
-            self._emerge_new_interest()
-        
-        self._save_data()
+        # Possibile nuovo interesse
+        if random.random() < 0.1 * hours_passed:  # 10% all'ora
+            self._add_random_interest()
     
-    def _emerge_new_interest(self):
-        """Emergenza di un nuovo interesse"""
-        # Trova categorie non ancora presenti
-        existing = set(self.interests["levels"].keys())
-        available = [c for c in self.INTEREST_CATEGORIES if c not in existing]
+    def _add_random_interest(self) -> bool:
+        """Aggiunge un interesse casuale."""
+        all_categories = list(self.INTEREST_CATEGORIES.keys())
         
-        if available:
-            new = random.choice(available)
-            self.interests["levels"][new] = random.uniform(0.3, 0.6)
-            self.interests["history"].append({
-                "timestamp": datetime.now().isoformat(),
-                "interest": new,
-                "action": "emerge"
-            })
-            logger.info(f"🌟 Nuovo interesse: {new}")
+        # Prova fino a 5 volte
+        for _ in range(5):
+            cat = random.choice(all_categories)
+            sub = random.choice(self.INTEREST_CATEGORIES[cat])
+            interest = f"{cat}:{sub}"
+            
+            if interest not in self.current:
+                self.current[interest] = random.uniform(0.2, 0.5)
+                self.history.append({
+                    'timestamp': datetime.now(),
+                    'type': 'gained',
+                    'interest': interest
+                })
+                logger.debug(f"✨ Nuovo interesse: {interest}")
+                return True
+        
+        return False
     
-    def boost_interest(self, category: str, amount: float = 0.1):
-        """
-        Aumenta un interesse (es. dopo una conversazione).
-        """
-        if category in self.interests["levels"]:
-            old = self.interests["levels"][category]
-            self.interests["levels"][category] = min(1.0, old + amount)
-        else:
-            self.interests["levels"][category] = amount
-        
-        self.interests["history"].append({
-            "timestamp": datetime.now().isoformat(),
-            "interest": category,
-            "action": "boost",
-            "amount": amount
-        })
-        
-        self._save_data()
+    # ========== INFLUENZA DA CONVERSAZIONI ==========
     
-    def get_current(self, n: int = 5) -> List[str]:
+    def reinforce_from_message(self, message: str) -> None:
         """
-        Restituisce i primi n interessi del momento.
+        Rafforza interessi in base al contenuto del messaggio.
         """
-        self.update()  # aggiorna prima
+        message_lower = message.lower()
         
+        for interest in list(self.current.keys()):
+            cat, sub = interest.split(':', 1)
+            
+            # Cerca parole chiave
+            if sub in message_lower or cat in message_lower:
+                # Rafforza leggermente
+                self.current[interest] = min(1.0, self.current[interest] + 0.05)
+                logger.debug(f"👍 Interesse rafforzato: {interest}")
+        
+        # Possibile nuovo interesse da parole chiave
+        for cat, subs in self.INTEREST_CATEGORIES.items():
+            if cat in message_lower:
+                for sub in subs:
+                    if sub in message_lower:
+                        interest = f"{cat}:{sub}"
+                        if interest not in self.current:
+                            self.current[interest] = 0.3
+                            self.history.append({
+                                'timestamp': datetime.now(),
+                                'type': 'gained_from_conversation',
+                                'interest': interest
+                            })
+                            logger.debug(f"💬 Nuovo interesse da conversazione: {interest}")
+                        return
+    
+    # ========== RECUPERO INTERESSI ==========
+    
+    def get_current_interests(self, min_weight: float = 0.2, limit: int = 5) -> List[str]:
+        """
+        Restituisce gli interessi con peso sopra soglia.
+        """
         sorted_interests = sorted(
-            self.interests["levels"].items(),
+            [(i, w) for i, w in self.current.items() if w >= min_weight],
             key=lambda x: x[1],
             reverse=True
         )
         
-        return [cat for cat, _ in sorted_interests[:n]]
+        return [i for i, w in sorted_interests[:limit]]
     
-    def get_all_levels(self) -> Dict[str, float]:
-        """Restituisce tutti i livelli"""
-        self.update()
-        return self.interests["levels"].copy()
+    def get_weight(self, interest: str) -> float:
+        """Restituisce il peso di un interesse."""
+        return self.current.get(interest, 0.0)
     
-    def get_interest_level(self, category: str) -> float:
-        """Livello di un interesse specifico"""
-        self.update()
-        return self.interests["levels"].get(category, 0.0)
+    def get_top_interest(self) -> Optional[str]:
+        """Restituisce l'interesse più forte."""
+        if not self.current:
+            return None
+        return max(self.current.items(), key=lambda x: x[1])[0]
     
-    def is_interested_in(self, topic: str) -> bool:
-        """
-        Verifica se AIVA è interessata a un topic.
-        Usa similarità con le categorie esistenti.
-        """
-        # Per ora semplice: controlla se topic è in categorie
-        topic_lower = topic.lower()
+    def get_interest_descriptions(self) -> List[str]:
+        """Restituisce descrizioni testuali degli interessi."""
+        interests = self.get_current_interests()
+        descriptions = []
         
-        for cat in self.interests["levels"]:
-            if cat in topic_lower or topic_lower in cat:
-                return self.interests["levels"][cat] > 0.5
+        for interest in interests:
+            cat, sub = interest.split(':', 1)
+            weight = self.current[interest]
+            
+            if weight > 0.7:
+                descriptions.append(f"adoro {sub}")
+            elif weight > 0.4:
+                descriptions.append(f"mi piace {sub}")
+            else:
+                descriptions.append(f"ogni tanto {sub}")
         
-        return False
+        return descriptions
     
-    def get_interest_summary(self) -> str:
-        """
-        Riassunto degli interessi per il prompt.
-        """
-        top = self.get_current(3)
+    def get_random_interest(self) -> Optional[str]:
+        """Restituisce un interesse casuale pesato."""
+        if not self.current:
+            return None
         
-        if not top:
-            return "non ho particolari interessi in questo momento"
+        # Lista pesata
+        interests = list(self.current.keys())
+        weights = list(self.current.values())
         
-        if len(top) == 1:
-            return f"sono particolarmente interessata a {top[0]}"
-        elif len(top) == 2:
-            return f"mi piacciono {top[0]} e {top[1]}"
+        # Normalizza pesi
+        total = sum(weights)
+        if total == 0:
+            return random.choice(interests)
+        
+        probs = [w / total for w in weights]
+        return random.choices(interests, weights=probs)[0]
+    
+    # ========== CONTESTO PER PROMPT ==========
+    
+    def get_context_string(self) -> str:
+        """
+        Genera una stringa da includere nel prompt.
+        """
+        interests = self.get_current_interests(limit=3)
+        
+        if not interests:
+            return ""
+        
+        descriptions = []
+        for interest in interests:
+            cat, sub = interest.split(':', 1)
+            descriptions.append(sub)
+        
+        if len(descriptions) == 1:
+            return f"In questo periodo mi interessa {descriptions[0]}"
+        elif len(descriptions) == 2:
+            return f"Mi piacciono {descriptions[0]} e {descriptions[1]}"
         else:
-            return f"mi interessano {top[0]}, {top[1]} e {top[2]}"
-
-# Istanza globale
-interest_manager = InterestManager()
+            last = descriptions.pop()
+            return f"Mi interessano {', '.join(descriptions)} e {last}"
+    
+    # ========== STATISTICHE ==========
+    
+    def get_stats(self) -> Dict:
+        """Statistiche sugli interessi."""
+        return {
+            'count': len(self.current),
+            'top': self.get_top_interest(),
+            'weights': self.current.copy(),
+            'recent_changes': self.history[-10:] if self.history else []
+        }
+    
+    # ========== PERSISTENZA ==========
+    
+    def to_dict(self) -> Dict:
+        """Serializza per persistenza."""
+        return {
+            'current': self.current.copy(),
+            'history': [
+                {
+                    'timestamp': h['timestamp'].isoformat(),
+                    'type': h['type'],
+                    'interest': h['interest']
+                }
+                for h in self.history[-100:]
+            ],
+            'last_update': self.last_update.isoformat()
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'Interests':
+        """Ricrea da dizionario."""
+        instance = cls()
+        instance.current = data.get('current', {})
+        instance.last_update = datetime.fromisoformat(data.get('last_update', datetime.now().isoformat()))
+        
+        # Ricostruisci storia
+        instance.history = []
+        for h in data.get('history', []):
+            instance.history.append({
+                'timestamp': datetime.fromisoformat(h['timestamp']),
+                'type': h['type'],
+                'interest': h['interest']
+            })
+        
+        return instance

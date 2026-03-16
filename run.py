@@ -1,169 +1,217 @@
 #!/usr/bin/env python3
 """
-AIVA 2.0 – ENTRY POINT PRINCIPALE
-Avvia tutti i moduli e la connessione con Telegram.
+AIVA AI - Entry point principale completo
 """
-
 import asyncio
 import sys
-import signal
 from pathlib import Path
-from datetime import datetime
+import signal
 from loguru import logger
+import traceback
 
-# Aggiungi path per import
+# Aggiungi path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import config
-from utils.logger import AIVA_logger
-
-# Import moduli core
-from core.consciousness import consciousness
-from core.personality import personality_exporter
-from core.memory.emotional import emotional_memory
-from core.memory.temporal import temporal_weighting
-from core.inner_world.interests import interest_manager
-from core.initiative.triggers import emotional_triggers
-from core.economics.value import user_value_tracker
-from media.manager import media_manager
-from database.models import db
-
-# Import piattaforme
-from platforms.telegram import TelegramBot
+from core.consciousness import Consciousness
+from core.memory.semantic import SemanticMemory
+from core.memory.episodic import EpisodicMemory
+from core.memory.emotional import EmotionalMemory
+from core.inner_world.diary import SecretDiary
+from core.economics.paypal import PayPalClient
+from core.economics.pricing import PricingManager
+from media.manager import MediaManager
+from utils.crypto import CryptoManager
+from utils.logger import setup_logger
+from database.sqlite.models import SQLiteDatabase
+from database.vector.chroma_client import ChromaMemoryClient
 
 class AIVAApp:
-    """
-    Applicazione principale di AIVA.
-    Gestisce avvio, inizializzazione moduli e spegnimento.
-    """
+    """Applicazione principale completa"""
     
     def __init__(self):
+        self.consciousness = None
         self.telegram_bot = None
-        self.running = False
-        self.start_time = None
+        self.media_manager = None
+        self.paypal_client = None
+        self.running = True
         
-        # Setup signal handlers
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
+        # Setup logging
+        setup_logger(config.LOG_FILE, config.LOG_LEVEL)
     
-    def _signal_handler(self, sig, frame):
-        """Gestisce segnali di terminazione"""
-        print("\n")
-        logger.warning(f"⚠️ Ricevuto segnale {sig}, spegnimento...")
-        asyncio.create_task(self.shutdown())
-    
-    async def initialize(self):
-        """
-        Inizializza tutti i moduli.
-        """
+    async def setup(self):
+        """Inizializza tutti i componenti."""
         logger.info("=" * 60)
-        logger.info("🌟 AIVA 2.0 - AVVIO IN CORSO")
+        logger.info("🌟 AIVA AI - Avvio in corso...")
         logger.info("=" * 60)
-        
-        self.start_time = datetime.now()
         
         # Stampa configurazione
         config.print_status()
         
-        # 1. Database
-        logger.info("💾 Inizializzazione database...")
-        await asyncio.to_thread(db._init_db)  # thread-safe
+        # Crea cartelle
+        config.setup_directories()
         
-        # 2. Media library
-        logger.info("📸 Scansione libreria media...")
-        await media_manager.scan_library()
-        media_stats = media_manager.get_stats()
-        logger.info(f"   Trovati {media_stats['total']} media totali")
+        # Inizializza database SQLite
+        logger.info("💾 Inizializzazione database SQLite...")
+        sqlite_db = SQLiteDatabase(config.DB_PATH)
         
-        # 3. Connetti moduli interni
-        logger.info("🔗 Connessione moduli interni...")
+        # Inizializza ChromaDB
+        logger.info("📦 Inizializzazione ChromaDB...")
+        chroma_client = ChromaMemoryClient(
+            host=config.CHROMA_HOST,
+            port=config.CHROMA_PORT,
+            persist_directory="./data/chroma"
+        )
         
-        # 4. Avvia il loop interiore di consciousness
-        consciousness.start() 
-        logger.info("🔄 Loop interiore avviato")
-
-        # Collega personality_exporter agli altri moduli
-        # Nota: questi moduli devono essere già importati
-        try:
-            personality_exporter.initialize(
-                pad=consciousness.pad if hasattr(consciousness, 'pad') else None,
-                circadian=consciousness.circadian if hasattr(consciousness, 'circadian') else None,
-                interests=interest_manager,
-                evolution=consciousness.evolution if hasattr(consciousness, 'evolution') else None,
-                memory_emotional=emotional_memory
+        # Inizializza memorie
+        semantic = SemanticMemory(sqlite_db)
+        episodic = EpisodicMemory(chroma_client)
+        emotional = EmotionalMemory(sqlite_db, chroma_client)
+        
+        # Inizializza crittografia per diario
+        crypto = CryptoManager(key=config.DIARY_ENCRYPTION_KEY)
+        
+        # Inizializza diario segreto
+        diary = SecretDiary(
+            diary_path=Path("./data/diary.enc"),
+            crypto=crypto
+        )
+        
+        # Inizializza PayPal
+        if config.PAYPAL_CLIENT_ID:
+            self.paypal_client = PayPalClient(
+                mode=config.PAYPAL_MODE,
+                client_id=config.PAYPAL_CLIENT_ID,
+                client_secret=config.PAYPAL_CLIENT_SECRET
             )
-            logger.info("   ✅ Personality exporter connesso")
-        except Exception as e:
-            logger.error(f"   ❌ Errore connessione moduli: {e}")
-        
-        # 4. Avvia piattaforme
-        if config.is_telegram_configured():
-            logger.info("📱 Avvio client Telegram...")
-            self.telegram_bot = TelegramBot()
+            logger.info("💰 PayPal configurato")
         else:
-            logger.error("❌ Telegram non configurato!")
-            return False
+            logger.warning("⚠️ PayPal non configurato")
         
-        logger.info("✅ Inizializzazione completata")
-        return True
-    
-    async def run(self):
-        """
-        Avvia il loop principale.
-        """
-        if not await self.initialize():
-            logger.error("❌ Impossibile avviare AIVA")
+        # Inizializza pricing
+        pricing = PricingManager()
+        
+        # Inizializza media manager
+        logger.info("📸 Inizializzazione Media Manager...")
+        self.media_manager = MediaManager(
+            media_dir=config.MEDIA_DIR,
+            catalog_path=config.MEDIA_CATALOG_PATH
+        )
+        await self.media_manager.scan_library()
+        stats = self.media_manager.get_stats()
+        logger.info(f"📊 Libreria media: {stats['total']} file")
+        
+        # Inizializza coscienza
+        logger.info("🧠 Inizializzazione coscienza...")
+        self.consciousness = Consciousness(
+            semantic_memory=semantic,
+            episodic_memory=episodic,
+            emotional_memory=emotional,
+            media_manager=self.media_manager,
+            diary=diary,
+            paypal_client=self.paypal_client,
+            pricing_manager=pricing
+        )
+        
+        # Avvia piattaforme
+        if config.is_telegram_configured():
+            await self._setup_telegram()
+        else:
+            logger.error("❌ Telegram NON configurato!")
             return
         
-        self.running = True
+        # Avvia task di iniziativa in background
+        asyncio.create_task(self._initiative_loop())
         
-        logger.info(f"🎯 AIVA è viva! (avviata il {self.start_time.strftime('%Y-%m-%d %H:%M:%S')})")
+        # Avvia task di autoriflessione notturna
+        asyncio.create_task(self._reflection_loop())
         
-        try:
-            # Avvia bot Telegram
-            if self.telegram_bot:
-                await self.telegram_bot.start()
-            
-        except Exception as e:
-            logger.error(f"❌ Errore durante l'esecuzione: {e}")
-            await self.shutdown()
+        logger.info("✅ AIVA è pronta!")
     
-    async def shutdown(self):
-        """
-        Spegne AIVA gracefulmente.
-        """
+    async def _setup_telegram(self):
+        """Configura il bot Telegram."""
+        from platforms.telegram import TelegramBot
+        
+        self.telegram_bot = TelegramBot(
+            consciousness=self.consciousness
+        )
+        logger.info("📱 Telegram configurato")
+    
+    async def _initiative_loop(self):
+        """Loop per iniziative spontanee."""
+        logger.info("🔄 Avvio loop iniziative...")
+        
+        while self.running:
+            try:
+                # Controlla ogni 30 minuti
+                await asyncio.sleep(1800)
+                
+                if self.consciousness:
+                    initiatives = await self.consciousness.check_initiative()
+                    
+                    for init in initiatives:
+                        logger.info(f"💬 Iniziativa per {init['user_id']}: {init['reason']}")
+                        
+                        # Invia messaggio tramite Telegram
+                        if self.telegram_bot:
+                            await self.telegram_bot.send_initiative(
+                                user_id=init['user_id'],
+                                message=init['reason']
+                            )
+                            
+            except Exception as e:
+                logger.error(f"❌ Errore loop iniziative: {e}")
+    
+    async def _reflection_loop(self):
+        """Loop per autoriflessione notturna."""
+        logger.info("🔄 Avvio loop autoriflessione...")
+        
+        while self.running:
+            try:
+                # Controlla ogni ora
+                await asyncio.sleep(3600)
+                
+                # Rifletti solo di notte (tra l'1 e le 4)
+                hour = datetime.now().hour
+                if 1 <= hour <= 4 and self.consciousness:
+                    reflection = await self.consciousness.reflect()
+                    if reflection:
+                        logger.info(f"🪞 Autoriflessione completata")
+                        
+            except Exception as e:
+                logger.error(f"❌ Errore loop autoriflessione: {e}")
+    
+    async def run(self):
+        """Esegue l'applicazione."""
+        await self.setup()
+        
+        # Gestione segnali di terminazione
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda s, f: asyncio.create_task(self.shutdown(s)))
+        
+        # Avvia bot Telegram
+        if self.telegram_bot:
+            try:
+                await self.telegram_bot.start()
+            except Exception as e:
+                logger.error(f"❌ Errore Telegram: {e}")
+                logger.debug(traceback.format_exc())
+        else:
+            logger.error("❌ Nessuna piattaforma configurata!")
+    
+    async def shutdown(self, sig=None):
+        """Spegne AIVA gracefully."""
         logger.info("🛑 Spegnimento in corso...")
         self.running = False
         
-        # Ferma bot
         if self.telegram_bot:
             await self.telegram_bot.stop()
-        
-        # Salva stati
-        logger.info("💾 Salvataggio stati...")
-        
-        try:
-            # Salva interessi
-            interest_manager._save_data()
-        except Exception as e:
-            logger.error(f"❌ Errore salvataggio interessi: {e}")
-        
-        # Calcola uptime
-        if self.start_time:
-            uptime = datetime.now() - self.start_time
-            logger.info(f"⏱️ Uptime: {str(uptime).split('.')[0]}")
-        
-        # Statistiche logger
-        logger_stats = AIVA_logger.get_stats()
-        logger.info(f"📊 Statistiche: {logger_stats['message_count']} messaggi, {logger_stats['error_count']} errori")
         
         logger.info("👋 AIVA spenta. Ciao!")
         sys.exit(0)
 
 async def main():
-    """
-    Funzione principale.
-    """
+    """Funzione principale."""
     app = AIVAApp()
     await app.run()
 

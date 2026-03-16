@@ -1,374 +1,213 @@
 """
-AIVA 2.0 – APPRENDIMENTO DAL FEEDBACK
-AIVA impara dalle reazioni dell'utente:
-- Cosa funziona (risposte lunghe, brevi, tono)
-- Cosa non funziona (viene ignorato, risposte secche)
-- Si adatta a ogni utente individualmente
+Feedback implicito: impara dalle reazioni dell'utente
 """
-
-import numpy as np
-from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple
-from collections import defaultdict
+from datetime import datetime, timedelta
 from loguru import logger
-import json
-from pathlib import Path
+import random
+import math
 
-class FeedbackLearner:
+class ImplicitFeedback:
     """
-    Impara dalle interazioni passate per migliorare le risposte future.
-    Tiene traccia di cosa funziona per ogni utente.
+    Analizza il feedback implicito dell'utente:
+    - Tempo di risposta
+    - Lunghezza delle risposte
+    - Cambi di argomento
+    - Abbandono conversazione
+    - Reazioni emotive
     """
     
-    # Metriche di feedback implicito
-    FEEDBACK_SIGNALS = {
-        "positive": {
-            "response_length_ratio": 0.8,  # risponde con messaggi lunghi
-            "response_time": 0.5,  # risponde velocemente
-            "continues_conversation": 0.9,  # continua a parlare
-            "asks_questions": 0.7,  # fa domande
-            "uses_emojis": 0.3,  # usa emoji positive
-            "calls_name": 0.8,  # chiama AIVA per nome
-            "compliments": 1.0  # fa complimenti
-        },
-        "negative": {
-            "ignores": 0.9,  # ignora la domanda
-            "short_responses": 0.7,  # risponde con "ok", "sì", "no"
-            "leaves_conversation": 1.0,  # smette di rispondere
-            "angry_emojis": 0.8,  # emoji arrabbiate
-            "criticism": 1.0,  # critiche
-            "repeats_question": 0.6  # ripete la stessa domanda
-        }
-    }
+    def __init__(self):
+        self.feedback_history = {}  # user_id -> lista feedback
+        logger.debug("📊 Feedback implicito inizializzato")
     
-    def __init__(self, data_path: str = "data/feedback.json"):
+    def analyze_response(self, 
+                        user_id: str,
+                        user_message: str,
+                        bot_response: str,
+                        response_time: float,
+                        conversation_context: Dict) -> Dict[str, float]:
         """
-        Inizializza il learner con persistenza.
+        Analizza la risposta dell'utente per estrarre feedback implicito.
+        
+        Args:
+            user_id: ID utente
+            user_message: Messaggio dell'utente
+            bot_response: Risposta del bot
+            response_time: Tempo impiegato dall'utente per rispondere (secondi)
+            conversation_context: Contesto della conversazione
+        
+        Returns:
+            Dict con punteggi di feedback per diversi aspetti
         """
-        self.data_path = Path(data_path)
-        self.data_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Dati di apprendimento per utente
-        self.user_data = self._load_data()
-        
-        # Cache per performance
-        self.cache = {}
-        
-        logger.info("📚 Feedback Learner inizializzato")
-    
-    def _load_data(self) -> Dict:
-        """Carica i dati esistenti"""
-        if self.data_path.exists():
-            try:
-                with open(self.data_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                return {}
-        return {}
-    
-    def _save_data(self):
-        """Salva i dati"""
-        try:
-            with open(self.data_path, 'w', encoding='utf-8') as f:
-                json.dump(self.user_data, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"❌ Errore salvataggio feedback: {e}")
-    
-    def record_interaction(self, user_id: str, 
-                          AIVA_message: str,
-                          user_response: Optional[str],
-                          context: Dict):
-        """
-        Registra un'interazione e il feedback implicito.
-        """
-        if user_id not in self.user_data:
-            self.user_data[user_id] = {
-                "interactions": [],
-                "preferences": self._default_preferences(),
-                "stats": {
-                    "total_interactions": 0,
-                    "positive_feedback": 0,
-                    "negative_feedback": 0,
-                    "avg_response_time": 0,
-                    "preferred_topics": defaultdict(int)
-                }
-            }
-        
-        # Calcola feedback per questa interazione
-        feedback = self._calculate_feedback(user_response, context)
-        
-        # Registra interazione
-        interaction = {
-            "timestamp": datetime.now().isoformat(),
-            "AIVA_message": AIVA_message[:100],  # preview
-            "user_response": user_response[:100] if user_response else None,
-            "user_responded": user_response is not None,
-            "feedback_score": feedback["score"],
-            "feedback_signals": feedback["signals"],
-            "context": {
-                "topic": context.get("topic", "unknown"),
-                "AIVA_mood": context.get("AIVA_mood"),
-                "user_intent": context.get("user_intent")
-            }
+        feedback = {
+            'engagement': self._calculate_engagement(user_message, response_time),
+            'satisfaction': self._calculate_satisfaction(user_message),
+            'interest': self._calculate_interest(user_message),
+            'emotional_response': self._calculate_emotional_response(user_message),
+            'topic_continuation': self._calculate_topic_continuation(user_message, bot_response)
         }
         
-        self.user_data[user_id]["interactions"].append(interaction)
+        # Salva nella storia
+        if user_id not in self.feedback_history:
+            self.feedback_history[user_id] = []
         
-        # Aggiorna statistiche
-        stats = self.user_data[user_id]["stats"]
-        stats["total_interactions"] += 1
-        if feedback["score"] > 0.5:
-            stats["positive_feedback"] += 1
-        elif feedback["score"] < -0.3:
-            stats["negative_feedback"] += 1
+        self.feedback_history[user_id].append({
+            'timestamp': datetime.now(),
+            'feedback': feedback,
+            'user_message': user_message[:100],
+            'bot_response': bot_response[:100]
+        })
         
-        if user_response and context.get("response_time"):
-            # Aggiorna tempo medio
-            old_avg = stats["avg_response_time"]
-            n = stats["total_interactions"]
-            stats["avg_response_time"] = (old_avg * (n-1) + context["response_time"]) / n
-        
-        # Aggiorna preferenze
-        self._update_preferences(user_id, feedback, context)
-        
-        # Mantieni solo ultime 100 interazioni
-        if len(self.user_data[user_id]["interactions"]) > 100:
-            self.user_data[user_id]["interactions"] = \
-                self.user_data[user_id]["interactions"][-100:]
-        
-        # Salva periodicamente
-        if stats["total_interactions"] % 10 == 0:
-            self._save_data()
+        # Mantieni solo ultimi 100 feedback per utente
+        if len(self.feedback_history[user_id]) > 100:
+            self.feedback_history[user_id] = self.feedback_history[user_id][-100:]
         
         return feedback
     
-    def _calculate_feedback(self, user_response: Optional[str], 
-                           context: Dict) -> Dict:
+    def _calculate_engagement(self, message: str, response_time: float) -> float:
         """
-        Calcola il feedback implicito dalla risposta dell'utente.
+        Calcola quanto l'utente è coinvolto.
         """
-        signals = {}
-        score = 0.0
-        weight_sum = 0.0
+        engagement = 0.5  # Base
         
-        if not user_response:
-            # Non ha risposto = feedback negativo
-            signals["no_response"] = 1.0
-            score = -0.5
-            weight_sum = 1.0
-        else:
-            # Analizza la risposta
-            response_lower = user_response.lower()
-            
-            # Segnali positivi
-            if len(user_response.split()) > 10:  # risposta lunga
-                signals["long_response"] = 0.8
-                score += 0.8 * self.FEEDBACK_SIGNALS["positive"]["response_length_ratio"]
-                weight_sum += self.FEEDBACK_SIGNALS["positive"]["response_length_ratio"]
-            
-            if any(q in response_lower for q in ["?", "come", "perché", "cosa"]):
-                signals["asks_questions"] = 0.7
-                score += 0.7 * self.FEEDBACK_SIGNALS["positive"]["asks_questions"]
-                weight_sum += self.FEEDBACK_SIGNALS["positive"]["asks_questions"]
-            
-            if "AIVA" in response_lower or "erika" in response_lower:
-                signals["calls_name"] = 0.8
-                score += 0.8 * self.FEEDBACK_SIGNALS["positive"]["calls_name"]
-                weight_sum += self.FEEDBACK_SIGNALS["positive"]["calls_name"]
-            
-            if any(comp in response_lower for comp in ["brava", "bella", "carina", "dolce"]):
-                signals["compliment"] = 1.0
-                score += 1.0 * self.FEEDBACK_SIGNALS["positive"]["compliments"]
-                weight_sum += self.FEEDBACK_SIGNALS["positive"]["compliments"]
-            
-            # Segnali negativi
-            if len(user_response.split()) < 3:  # risposta molto breve
-                signals["short_response"] = 0.7
-                score -= 0.7 * self.FEEDBACK_SIGNALS["negative"]["short_responses"]
-                weight_sum += self.FEEDBACK_SIGNALS["negative"]["short_responses"]
-            
-            if any(angry in response_lower for angry in ["😠", "😡", "rabbia", "cattivo"]):
-                signals["angry"] = 0.8
-                score -= 0.8 * self.FEEDBACK_SIGNALS["negative"]["angry_emojis"]
-                weight_sum += self.FEEDBACK_SIGNALS["negative"]["angry_emojis"]
-            
-            if any(crit in response_lower for crit in ["brutta", "stupida", "noiosa"]):
-                signals["criticism"] = 1.0
-                score -= 1.0 * self.FEEDBACK_SIGNALS["negative"]["criticism"]
-                weight_sum += self.FEEDBACK_SIGNALS["negative"]["criticism"]
+        # Tempo di risposta (più veloce = più coinvolto)
+        if response_time < 30:  # Meno di 30 secondi
+            engagement += 0.3
+        elif response_time < 120:  # Meno di 2 minuti
+            engagement += 0.1
+        elif response_time > 600:  # Più di 10 minuti
+            engagement -= 0.2
         
-        # Normalizza score
-        if weight_sum > 0:
-            score = score / weight_sum
-        else:
-            score = 0.0
+        # Lunghezza messaggio
+        words = len(message.split())
+        if words > 20:
+            engagement += 0.2
+        elif words > 10:
+            engagement += 0.1
+        elif words < 3:
+            engagement -= 0.1
         
-        return {
-            "score": score,
-            "signals": signals,
-            "interpretation": self._interpret_score(score)
-        }
+        return max(0.0, min(1.0, engagement))
     
-    def _interpret_score(self, score: float) -> str:
-        """Interpreta il punteggio di feedback"""
-        if score > 0.7:
-            return "molto positivo"
-        elif score > 0.3:
-            return "positivo"
-        elif score > -0.3:
-            return "neutro"
-        elif score > -0.7:
-            return "negativo"
-        else:
-            return "molto negativo"
+    def _calculate_satisfaction(self, message: str) -> float:
+        """
+        Calcola la soddisfazione dell'utente.
+        """
+        satisfaction = 0.5
+        
+        # Parole positive/negative
+        positive_words = ['grazie', '❤️', '👍', 'perfetto', 'ottimo', 'bello', 'brava']
+        negative_words = ['no', 'male', 'sbagliato', 'brutto', 'deluso', 'insoddisfatto']
+        
+        msg_lower = message.lower()
+        
+        pos_count = sum(1 for w in positive_words if w in msg_lower)
+        neg_count = sum(1 for w in negative_words if w in msg_lower)
+        
+        satisfaction += pos_count * 0.1
+        satisfaction -= neg_count * 0.15
+        
+        return max(0.0, min(1.0, satisfaction))
     
-    def _update_preferences(self, user_id: str, feedback: Dict, context: Dict):
+    def _calculate_interest(self, message: str) -> float:
         """
-        Aggiorna le preferenze dell'utente in base al feedback.
+        Calcola l'interesse dell'utente.
         """
-        prefs = self.user_data[user_id]["preferences"]
+        interest = 0.5
         
-        # Pesi per diverse caratteristiche
-        learning_rate = 0.1
+        # Domande mostrano interesse
+        question_count = message.count('?')
+        interest += question_count * 0.15
         
-        # Aggiorna in base al feedback
-        if feedback["score"] > 0.3:
-            # Feedback positivo: rafforza ciò che abbiamo fatto
-            if context.get("AIVA_mood"):
-                current = prefs["preferred_moods"].get(context["AIVA_mood"], 0.5)
-                prefs["preferred_moods"][context["AIVA_mood"]] = current + learning_rate
-            
-            if context.get("response_length"):
-                prefs["preferred_length"] = (
-                    prefs["preferred_length"] * (1 - learning_rate) + 
-                    context["response_length"] * learning_rate
-                )
-            
-            if context.get("topic"):
-                prefs["preferred_topics"][context["topic"]] = (
-                    prefs["preferred_topics"].get(context["topic"], 0) + 1
-                )
+        # Richieste di approfondimento
+        deepening_phrases = ['dimmi di più', 'approfondisci', 'spiegami', 'come mai']
+        if any(p in message.lower() for p in deepening_phrases):
+            interest += 0.3
         
-        elif feedback["score"] < -0.3:
-            # Feedback negativo: indebolisci ciò che abbiamo fatto
-            if context.get("AIVA_mood"):
-                current = prefs["preferred_moods"].get(context["AIVA_mood"], 0.5)
-                prefs["preferred_moods"][context["AIVA_mood"]] = current - learning_rate
-            
-            if context.get("topic"):
-                # Evita questo topic in futuro
-                prefs["topics_to_avoid"].append(context["topic"])
-                prefs["topics_to_avoid"] = list(set(prefs["topics_to_avoid"][-20:]))
+        # Cambi bruschi di argomento (negativo)
+        if len(message.split()) < 3 and '?' not in message:
+            interest -= 0.2
+        
+        return max(0.0, min(1.0, interest))
     
-    def get_user_preferences(self, user_id: str) -> Dict:
+    def _calculate_emotional_response(self, message: str) -> float:
         """
-        Restituisce le preferenze apprese per un utente.
+        Calcola l'intensità della risposta emotiva.
         """
-        if user_id not in self.user_data:
-            return self._default_preferences()
+        # Conteggio emoticon
+        import re
+        emoji_pattern = re.compile(r'[\U0001F600-\U0001F64F]|[\U0001F300-\U0001F5FF]|[\U0001F680-\U0001F6FF]|[\U0001F1E0-\U0001F1FF]')
+        emojis = emoji_pattern.findall(message)
         
-        prefs = self.user_data[user_id]["preferences"]
+        emotional = len(emojis) * 0.2
         
-        # Normalizza
-        total = sum(prefs["preferred_moods"].values())
-        if total > 0:
-            prefs["preferred_moods"] = {
-                k: v/total for k, v in prefs["preferred_moods"].items()
-            }
+        # Punteggiatura enfatica
+        emotional += message.count('!') * 0.1
+        emotional += message.count('...') * 0.05
         
-        return prefs
+        return min(1.0, emotional)
     
-    def get_best_mood(self, user_id: str) -> Optional[str]:
+    def _calculate_topic_continuation(self, user_msg: str, bot_msg: str) -> float:
         """
-        Restituisce il mood che funziona meglio per questo utente.
+        Calcola se l'utente continua sullo stesso topic.
         """
-        prefs = self.get_user_preferences(user_id)
-        moods = prefs.get("preferred_moods", {})
+        # Estrai parole chiave (semplificato)
+        user_words = set(user_msg.lower().split())
+        bot_words = set(bot_msg.lower().split())
         
-        if not moods:
-            return None
+        if not bot_words:
+            return 0.5
         
-        return max(moods, key=moods.get)
+        # Parole in comune
+        common = user_words.intersection(bot_words)
+        overlap = len(common) / len(bot_words)
+        
+        return min(1.0, overlap * 2)  # Scala
     
-    def get_best_length(self, user_id: str) -> float:
+    def get_user_trend(self, user_id: str, days: int = 7) -> Dict[str, float]:
         """
-        Restituisce la lunghezza di risposta preferita (in parole).
+        Calcola il trend di feedback per un utente.
         """
-        prefs = self.get_user_preferences(user_id)
-        return prefs.get("preferred_length", 50)
-    
-    def get_topics_to_avoid(self, user_id: str) -> List[str]:
-        """
-        Restituisce i topic che hanno causato feedback negativi.
-        """
-        prefs = self.get_user_preferences(user_id)
-        return prefs.get("topics_to_avoid", [])
-    
-    def _default_preferences(self) -> Dict:
-        """Preferenze di default"""
-        return {
-            "preferred_moods": {
-                "felice": 0.5,
-                "normale": 0.5,
-                "affettuosa": 0.5
-            },
-            "preferred_length": 50,
-            "preferred_topics": {},
-            "topics_to_avoid": [],
-            "use_emojis": 0.5,
-            "formality": 0.5
-        }
-    
-    def get_statistics(self, user_id: str) -> Dict:
-        """
-        Statistiche di apprendimento per un utente.
-        """
-        if user_id not in self.user_data:
+        if user_id not in self.feedback_history:
             return {}
         
-        data = self.user_data[user_id]
-        stats = data["stats"]
+        recent = [
+            f for f in self.feedback_history[user_id]
+            if f['timestamp'] > datetime.now() - timedelta(days=days)
+        ]
         
-        return {
-            "total_interactions": stats["total_interactions"],
-            "positive_rate": stats["positive_feedback"] / max(1, stats["total_interactions"]),
-            "negative_rate": stats["negative_feedback"] / max(1, stats["total_interactions"]),
-            "avg_response_time": stats["avg_response_time"],
-            "preferred_mood": self.get_best_mood(user_id),
-            "preferred_length": self.get_best_length(user_id),
-            "topics_to_avoid": self.get_topics_to_avoid(user_id)
-        }
+        if not recent:
+            return {}
+        
+        # Media dei feedback
+        avg_feedback = {}
+        for key in recent[0]['feedback'].keys():
+            values = [f['feedback'][key] for f in recent]
+            avg_feedback[key] = sum(values) / len(values)
+        
+        return avg_feedback
     
-    def get_global_insights(self) -> Dict:
+    def get_learning_signal(self, user_id: str) -> Dict[str, float]:
         """
-        Insight globali su tutti gli utenti.
+        Genera segnale di apprendimento per ottimizzare comportamento.
         """
-        insights = {
-            "total_users": len(self.user_data),
-            "total_interactions": sum(
-                u["stats"]["total_interactions"] for u in self.user_data.values()
-            ),
-            "avg_positive_rate": np.mean([
-                u["stats"]["positive_feedback"] / max(1, u["stats"]["total_interactions"])
-                for u in self.user_data.values()
-            ]),
-            "best_moods": defaultdict(float)
-        }
+        trend = self.get_user_trend(user_id)
         
-        # Mood più apprezzati globalmente
-        for u_data in self.user_data.values():
-            prefs = u_data["preferences"]
-            for mood, score in prefs["preferred_moods"].items():
-                insights["best_moods"][mood] += score
+        if not trend:
+            return {}
         
-        # Normalizza
-        total = sum(insights["best_moods"].values())
-        if total > 0:
-            insights["best_moods"] = {
-                k: v/total for k, v in insights["best_moods"].items()
-            }
+        # Converti in segnali di apprendimento
+        signals = {}
         
-        return insights
-
-# Istanza globale
-feedback_learner = FeedbackLearner()
+        if trend.get('engagement', 0.5) < 0.4:
+            signals['increase_engagement'] = 1 - trend['engagement']
+        
+        if trend.get('satisfaction', 0.5) < 0.4:
+            signals['improve_quality'] = 1 - trend['satisfaction']
+        
+        if trend.get('interest', 0.5) < 0.3:
+            signals['add_variety'] = 1 - trend['interest']
+        
+        return signals

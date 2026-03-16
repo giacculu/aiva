@@ -1,0 +1,85 @@
+{
+  "dashboard": {
+    "title": "AIVA AI Dashboard",
+    "version": 1,
+    "panels": [
+      {
+        "title": "Messaggi Ricevuti",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(AIVA_messages_received_total[5m])",
+            "legendFormat": "{{platform}}"
+          }
+        ]
+      },
+      {
+        "title": "Messaggi Inviati",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(AIVA_messages_sent_total[5m])",
+            "legendFormat": "{{platform}}"
+          }
+        ]
+      },
+      {
+        "title": "Media Inviati per Livello",
+        "type": "pie",
+        "targets": [
+          {
+            "expr": "AIVA_media_sent_total",
+            "legendFormat": "{{level}}"
+          }
+        ]
+      },
+      {
+        "title": "Pagamenti",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "sum(AIVA_payments_total)"
+          }
+        ]
+      },
+      {
+        "title": "Tempo di Risposta",
+        "type": "heatmap",
+        "targets": [
+          {
+            "expr": "rate(AIVA_response_time_seconds_bucket[5m])"
+          }
+        ]
+      },
+      {
+        "title": "CPU Usage",
+        "type": "gauge",
+        "targets": [
+          {
+            "expr": "AIVA_cpu_usage_percent"
+          }
+        ]
+      },
+      {
+        "title": "Memoria Utilizzata",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "AIVA_memory_usage_bytes / 1024 / 1024",
+            "legendFormat": "MB"
+          }
+        ]
+      },
+      {
+        "title": "Uptime",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "AIVA_uptime_seconds / 86400",
+            "legendFormat": "days"
+          }
+        ]
+      }
+    ]
+  }
+}

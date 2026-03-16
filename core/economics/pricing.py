@@ -1,277 +1,286 @@
 """
-AIVA 2.0 – PREZZI DINAMICI E PERSONALIZZATI
-AIVA non ha un listino fisso.
-Ogni utente ha prezzi diversi in base a:
-- Livello di supporto passato
-- Quanto è speciale per lei
-- Il momento e l'umore
-- Il tipo di contenuto
+Pricing dinamico: prezzi base e personalizzati per utente
 """
-
-import numpy as np
+from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Tuple
 from loguru import logger
-import json
-from pathlib import Path
 import random
+import math
 
-class DynamicPricing:
+class PricingManager:
     """
-    Gestisce i prezzi in modo dinamico e personalizzato.
-    Non è un listino, è una relazione.
+    Gestisce i prezzi dei contenuti in modo dinamico.
+    I prezzi base sono minimi, ma possono variare in base a:
+    - Fedeltà dell'utente
+    - Relazione emotiva
+    - Momento
+    - Richiesta specifica
     """
     
-    # Prezzi base minimi (mai sotto questi)
+    # Prezzi base (minimi assoluti)
     BASE_PRICES = {
-        "foto_base": 5.00,
-        "foto_soft": 8.00,
-        "foto_intima": 15.00,
-        "foto_hot": 25.00,
-        "video_base": 20.00,
-        "video_intimo": 35.00,
-        "video_hot": 50.00,
-        "chat_intima_10min": 10.00,
-        "chat_intima_30min": 25.00,
-        "personalizzato": 30.00
+        'foto_base': 5.00,
+        'foto_selfie': 8.00,
+        'foto_intima': 15.00,
+        'foto_hot': 25.00,
+        'video_base': 20.00,
+        'video_intimo': 35.00,
+        'video_hot': 50.00,
+        'chat_intima_10min': 10.00,
+        'chat_intima_30min': 25.00,
+        'chat_vip_ora': 40.00,
+        'audio_personale': 12.00,
+        'set_foto_5': 60.00,
+        'set_foto_10': 100.00
     }
     
-    # Fattori che influenzano il prezzo
-    PRICE_FACTORS = {
-        "relationship": {
-            "nuovo": 1.2,        # nuovi: prezzo più alto (non si sa mai)
-            "conoscente": 1.0,    # conoscenti: prezzo base
-            "amico": 0.9,         # amici: sconto 10%
-            "affezionato": 0.8,   # affezionati: sconto 20%
-            "speciale": 0.7       # speciali: sconto 30%
-        },
-        "support_level": {
-            None: 1.0,
-            "base": 0.9,
-            "regular": 0.8,
-            "vip": 0.7
-        },
-        "mood": {
-            "felice": 0.9,        # felice: più generosa
-            "affettuosa": 0.8,    # affettuosa: molto generosa
-            "curiosa": 1.0,       # curiosa: normale
-            "normale": 1.0,       # normale: normale
-            "malinconica": 1.1,   # malinconica: meno generosa
-            "stanca": 1.2         # stanca: poco generosa
-        },
-        "time": {
-            "day": 1.0,           # giorno: normale
-            "evening": 0.9,       # sera: più generosa
-            "night": 0.8,         # notte: molto generosa (vuole compagnia)
-            "morning": 1.1        # mattina: meno generosa
-        }
+    # Fattori di sconto per fedeltà
+    LOYALTY_DISCOUNTS = {
+        'nuovo': 1.0,      # Nessuno sconto
+        'base': 0.95,      # 5% sconto
+        'regular': 0.9,    # 10% sconto
+        'vip': 0.8,        # 20% sconto
+        'special': 0.75     # 25% sconto (utenti molto speciali)
     }
     
-    def __init__(self, data_path: str = "data/pricing.json"):
-        """
-        Inizializza il pricing dinamico.
-        """
-        self.data_path = Path(data_path)
-        self.data_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self):
+        self.user_prices = {}  # Prezzi personalizzati per utente
+        self.purchase_history = {}  # Storico acquisti per utente
+        self.dynamic_factors = {}  # Fattori dinamici per utente
         
-        # Prezzi personalizzati per utente
-        self.custom_prices = self._load_data()
-        
-        logger.info("💶 Dynamic Pricing inizializzato")
+        logger.debug("💰 Pricing Manager inizializzato")
     
-    def _load_data(self) -> Dict:
-        """Carica prezzi personalizzati"""
-        if self.data_path.exists():
-            try:
-                with open(self.data_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                return {"users": {}}
-        return {"users": {}}
-    
-    def _save_data(self):
-        """Salva prezzi personalizzati"""
-        try:
-            with open(self.data_path, 'w', encoding='utf-8') as f:
-                json.dump(self.custom_prices, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"❌ Errore salvataggio prezzi: {e}")
-    
-    def get_price(self, user_id: str, content_type: str, context: Dict) -> float:
+    def get_price(self, 
+                  item_type: str,
+                  user_id: Optional[str] = None,
+                  context: Optional[Dict] = None) -> float:
         """
-        Calcola il prezzo per un utente e un tipo di contenuto.
+        Calcola il prezzo per un item, considerando utente e contesto.
+        
+        Args:
+            item_type: Tipo di contenuto
+            user_id: ID utente (opzionale)
+            context: Contesto aggiuntivo (umore, richiesta, etc.)
+        
+        Returns:
+            Prezzo in EUR
         """
         # Prezzo base
-        base = self.BASE_PRICES.get(content_type, 10.00)
+        base_price = self.BASE_PRICES.get(item_type, 10.00)
         
-        # Ottieni fattori
-        relationship = context.get("relationship", "nuovo")
-        support_level = context.get("support_level")
-        mood = context.get("AIVA_mood", "normale")
-        time_factor = self._get_time_factor()
+        # Se nessun utente, restituisci base
+        if not user_id:
+            return base_price
         
-        # Calcola moltiplicatore totale
-        multiplier = 1.0
-        multiplier *= self.PRICE_FACTORS["relationship"].get(relationship, 1.0)
-        multiplier *= self.PRICE_FACTORS["support_level"].get(support_level, 1.0)
-        multiplier *= self.PRICE_FACTORS["mood"].get(mood, 1.0)
-        multiplier *= time_factor
+        # Ottieni livello fedeltà
+        loyalty = self._get_user_loyalty(user_id)
+        discount = self.LOYALTY_DISCOUNTS.get(loyalty, 1.0)
         
-        # Applica prezzo personalizzato se esiste
-        if user_id in self.custom_prices["users"]:
-            if content_type in self.custom_prices["users"][user_id]:
-                custom = self.custom_prices["users"][user_id][content_type]
-                base = custom  # override base
+        # Prezzo dopo sconto fedeltà
+        price = base_price * discount
         
-        # Calcola prezzo finale
-        price = base * multiplier
+        # Applica fattori dinamici
+        if context:
+            price = self._apply_dynamic_factors(price, user_id, context)
+        
+        # Applica eventuale prezzo personalizzato (se esiste e è più basso)
+        if user_id in self.user_prices and item_type in self.user_prices[user_id]:
+            custom_price = self.user_prices[user_id][item_type]
+            price = min(price, custom_price)
         
         # Arrotonda a 0.50
         price = round(price * 2) / 2
         
-        # Non scendere mai sotto il 50% del base
-        min_price = base * 0.5
-        price = max(min_price, price)
-        
-        logger.debug(f"💰 Prezzo per {user_id} - {content_type}: {price}€ (multiplier: {multiplier:.2f})")
-        
+        logger.debug(f"💰 Prezzo per {item_type} a {user_id}: {price}€ (fedeltà: {loyalty})")
         return price
     
-    def get_prices_for_user(self, user_id: str, user_value: Dict) -> Dict:
+    def _get_user_loyalty(self, user_id: str) -> str:
         """
-        Restituisce tutti i prezzi per un utente.
+        Determina il livello di fedeltà dell'utente.
         """
-        context = {
-            "relationship": user_value.get("level", "nuovo"),
-            "support_level": user_value.get("level"),
-            "AIVA_mood": "normale"  # default, verrà sovrascritto dopo
-        }
+        if user_id not in self.purchase_history:
+            return 'nuovo'
         
-        prices = {}
-        for content_type in self.BASE_PRICES.keys():
-            prices[content_type] = self.get_price(user_id, content_type, context)
+        history = self.purchase_history[user_id]
+        total_spent = history.get('total_spent', 0)
+        purchase_count = history.get('count', 0)
         
-        prices["summary"] = f"Prezzi personalizzati per {user_value.get('level', 'nuovo')}"
-        return prices
-
-    def _get_time_factor(self) -> float:
-        """Fattore basato sull'ora"""
-        hour = datetime.now().hour
-        
-        if 6 <= hour < 9:
-            return self.PRICE_FACTORS["time"]["morning"]
-        elif 9 <= hour < 18:
-            return self.PRICE_FACTORS["time"]["day"]
-        elif 18 <= hour < 23:
-            return self.PRICE_FACTORS["time"]["evening"]
+        if total_spent >= 200 or purchase_count >= 20:
+            return 'special'
+        elif total_spent >= 100 or purchase_count >= 10:
+            return 'vip'
+        elif total_spent >= 30 or purchase_count >= 3:
+            return 'regular'
+        elif total_spent > 0:
+            return 'base'
         else:
-            return self.PRICE_FACTORS["time"]["night"]
+            return 'nuovo'
     
-    def set_custom_price(self, user_id: str, content_type: str, price: float):
+    def _apply_dynamic_factors(self, 
+                              base_price: float,
+                              user_id: str,
+                              context: Dict) -> float:
+        """
+        Applica fattori dinamici al prezzo.
+        """
+        price = base_price
+        
+        # Fattore umore di AIVA
+        mood = context.get('mood', 'normale')
+        mood_factors = {
+            'felice': 1.0,
+            'entusiasta': 0.95,  # Più generosa
+            'affettuosa': 0.9,    # Più generosa
+            'normale': 1.0,
+            'curiosa': 1.0,
+            'stanca': 1.05,       # Meno pazienza
+            'triste': 0.95,       # Cerca conforto
+            'malinconica': 0.95
+        }
+        price *= mood_factors.get(mood, 1.0)
+        
+        # Fattore ora del giorno
+        hour = datetime.now().hour
+        if 22 <= hour or hour <= 6:  # Notte
+            price *= 0.95  # Sconto notturno
+        elif 12 <= hour <= 14:  # Pranzo
+            price *= 1.0
+        
+        # Fattore urgenza nella richiesta
+        if context.get('urgency', False):
+            price *= 1.1  # Più caro se urgente
+        
+        # Fattore affetto (utenti speciali)
+        if user_id in self.dynamic_factors:
+            affection = self.dynamic_factors[user_id].get('affection', 0)
+            if affection > 0.7:
+                price *= 0.9  # Sconto affettivo
+        
+        return max(base_price * 0.5, price)  # Mai meno del 50% del base
+    
+    def set_user_price(self, 
+                      user_id: str,
+                      item_type: str,
+                      price: float,
+                      reason: str = "personalizzato") -> None:
         """
         Imposta un prezzo personalizzato per un utente.
         """
-        if user_id not in self.custom_prices["users"]:
-            self.custom_prices["users"][user_id] = {}
+        if user_id not in self.user_prices:
+            self.user_prices[user_id] = {}
         
-        self.custom_prices["users"][user_id][content_type] = price
-        self._save_data()
+        # Assicura che non sia sotto il minimo
+        min_price = self.BASE_PRICES.get(item_type, 5.00) * 0.5
+        if price < min_price:
+            logger.warning(f"⚠️ Prezzo {price} sotto il minimo {min_price}, forzato")
+            price = min_price
         
-        logger.info(f"💰 Prezzo personalizzato per {user_id} - {content_type}: {price}€")
+        self.user_prices[user_id][item_type] = price
+        logger.info(f"💰 Prezzo personalizzato per {user_id} su {item_type}: {price}€ ({reason})")
     
-    def get_price_list(self, user_id: str, context: Dict) -> Dict[str, float]:
+    def record_purchase(self, 
+                       user_id: str,
+                       item_type: str,
+                       amount: float,
+                       payment_id: str) -> None:
         """
-        Restituisce la lista prezzi per un utente.
+        Registra un acquisto.
         """
-        prices = {}
+        if user_id not in self.purchase_history:
+            self.purchase_history[user_id] = {
+                'count': 0,
+                'total_spent': 0.0,
+                'items': [],
+                'first_purchase': datetime.now(),
+                'last_purchase': None
+            }
         
-        for content_type in self.BASE_PRICES.keys():
-            prices[content_type] = self.get_price(user_id, content_type, context)
+        history = self.purchase_history[user_id]
+        history['count'] += 1
+        history['total_spent'] += amount
+        history['last_purchase'] = datetime.now()
+        history['items'].append({
+            'item_type': item_type,
+            'amount': amount,
+            'payment_id': payment_id,
+            'timestamp': datetime.now()
+        })
         
-        return prices
+        logger.info(f"💰 Acquisto registrato: {user_id} - {item_type} - {amount}€")
     
-    def get_price_list_text(self, user_id: str, context: Dict) -> str:
+    def get_price_list(self, user_id: Optional[str] = None) -> Dict[str, float]:
         """
-        Genera un testo con la lista prezzi personalizzata.
+        Restituisce il listino prezzi per un utente.
         """
-        prices = self.get_price_list(user_id, context)
+        price_list = {}
         
-        # Ordina per prezzo
-        sorted_prices = sorted(prices.items(), key=lambda x: x[1])
+        for item_type, base in self.BASE_PRICES.items():
+            price_list[item_type] = self.get_price(item_type, user_id)
         
-        lines = ["📋 **I MIEI CONTENUTI**\n"]
-        
-        for content_type, price in sorted_prices:
-            name = self._get_content_name(content_type)
-            lines.append(f"• {name}: **{price}€**")
-        
-        # Aggiungi nota personalizzata
-        relationship = context.get("relationship", "nuovo")
-        if relationship == "speciale":
-            lines.append("\n*Per te che sei speciale, i prezzi sono già scontati* 💕")
-        elif context.get("support_level") == "vip":
-            lines.append("\n*Grazie di tutto quello che hai già fatto* ❤️")
-        
-        return "\n".join(lines)
+        return price_list
     
-    def _get_content_name(self, content_type: str) -> str:
-        """Restituisce il nome carino del contenuto"""
-        names = {
-            "foto_base": "Foto base",
-            "foto_soft": "Foto carina",
-            "foto_intima": "Foto intima",
-            "foto_hot": "Foto hot",
-            "video_base": "Video base",
-            "video_intimo": "Video intimo",
-            "video_hot": "Video hot",
-            "chat_intima_10min": "Chat intima 10min",
-            "chat_intima_30min": "Chat intima 30min",
-            "personalizzato": "Contenuto personalizzato"
-        }
-        return names.get(content_type, content_type)
-    
-    def suggest_amount(self, user_id: str, context: Dict, 
-                      reason: str = "generico") -> float:
+    def get_price_list_text(self, user_id: Optional[str] = None) -> str:
         """
-        Suggerisce un importo per una richiesta generica.
+        Genera testo listino per prompt.
         """
-        # Mappa ragioni a tipi di contenuto
-        reason_map = {
-            "caffè": "foto_base",
-            "cena": "foto_soft",
-            "regalo": "foto_intima",
-            "speciale": "foto_hot",
-            "supporto": "foto_base"
+        prices = self.get_price_list(user_id)
+        
+        text = "📋 **I miei contenuti:**\n\n"
+        
+        # Raggruppa per categoria
+        categories = {
+            'foto': [k for k in prices if k.startswith('foto')],
+            'video': [k for k in prices if k.startswith('video')],
+            'chat': [k for k in prices if k.startswith('chat')],
+            'set': [k for k in prices if k.startswith('set')],
+            'audio': [k for k in prices if k.startswith('audio')]
         }
         
-        content_type = reason_map.get(reason, "foto_base")
-        price = self.get_price(user_id, content_type, context)
+        for category, items in categories.items():
+            if items:
+                text += f"**{category.capitalize()}:**\n"
+                for item in items:
+                    # Formatta nome
+                    name = item.replace('_', ' ').capitalize()
+                    text += f"  • {name}: {prices[item]}€\n"
+                text += "\n"
         
-        # Aggiungi un po' di variabilità
-        variation = random.uniform(0.9, 1.1)
-        price = round(price * variation * 2) / 2
-        
-        return price
+        return text
     
-    def get_discount_percentage(self, user_id: str, context: Dict) -> int:
+    def get_user_value(self, user_id: str) -> Dict[str, Any]:
         """
-        Calcola la percentuale di sconto per un utente.
+        Calcola il valore complessivo di un utente.
         """
-        # Prezzo base di riferimento (foto_base)
-        base_price = self.BASE_PRICES["foto_base"]
-        actual_price = self.get_price(user_id, "foto_base", context)
+        if user_id not in self.purchase_history:
+            return {'value': 0, 'level': 'nuovo', 'potential': 0.5}
         
-        discount = int(100 * (1 - actual_price / base_price))
-        return max(0, discount)
+        history = self.purchase_history[user_id]
+        
+        # Valore economico
+        economic_value = history['total_spent']
+        
+        # Potenziale (quanto potrebbe ancora spendere)
+        # Basato su frequenza e recenza
+        if history['last_purchase']:
+            days_since = (datetime.now() - history['last_purchase']).days
+            frequency = history['count'] / max(1, days_since)
+            potential = min(1.0, frequency * 10)
+        else:
+            potential = 0.3
+        
+        return {
+            'economic_value': economic_value,
+            'level': self._get_user_loyalty(user_id),
+            'potential': potential,
+            'purchase_count': history['count']
+        }
     
-    def reset_user(self, user_id: str):
+    def update_affection_factor(self, user_id: str, affection: float) -> None:
         """
-        Resetta i prezzi personalizzati per un utente.
+        Aggiorna il fattore affettivo per un utente.
         """
-        if user_id in self.custom_prices["users"]:
-            del self.custom_prices["users"][user_id]
-            self._save_data()
-            logger.info(f"🔄 Prezzi resettati per {user_id}")
-
-# Istanza globale
-dynamic_pricing = DynamicPricing()
+        if user_id not in self.dynamic_factors:
+            self.dynamic_factors[user_id] = {}
+        
+        self.dynamic_factors[user_id]['affection'] = affection
+        logger.debug(f"❤️ Fattore affettivo per {user_id}: {affection}")

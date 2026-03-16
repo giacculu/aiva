@@ -1,417 +1,253 @@
 """
-AIVA 2.0 – ESTRAZIONE DELL'IMPLICITO
-AIVA legge tra le righe:
-- Cosa l'utente non dice ma intende
-- Le emozioni nascoste
-- Le mezze verità
-- I silenzi che parlano
+Estrazione di informazioni implicite dal messaggio
 """
-
 import re
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
 from loguru import logger
-import numpy as np
 
 class ImplicitExtractor:
     """
-    Estrae ciò che è implicito nel messaggio.
-    Combina analisi del contesto, pattern e psicologia inversa.
+    Estrae ciò che l'utente NON dice esplicitamente:
+    - Stati d'animo impliciti
+    - Bisogni nascosti
+    - Relazioni tra concetti
+    - Contraddizioni
     """
     
-    # Pattern per cose non dette
-    IMPLICIT_PATTERNS = {
-        "dubbio": [
-            r"non so se",
-            r"forse",
-            r"magari",
-            r"chissà",
-            r"dubito",
-            r"incerto",
-            r"non sono sicur[oa]"
-        ],
-        "desiderio_nascosto": [
-            r"vorrei ma",
-            r"mi piacerebbe però",
-            r"se potessi",
-            r"sarebbe bello se",
-            r"magari un giorno"
-        ],
-        "paura": [
-            r"ho paura che",
-            r"temo che",
-            r"non vorrei che",
-            r"mi preoccupa",
-            r"che ansia"
-        ],
-        "gelosia": [
-            r"chi è",
-            r"con chi",
-            r"altri",
-            r"anche con",
-            r"solo per me"
-        ],
-        "insicurezza": [
-            r"non sono abbastanza",
-            r"non valgo",
-            r"non merito",
-            r"sono brutto",
-            r"non piaccio"
-        ],
-        "bisogno_di_attenzione": [
-            r"nessuno mi",
-            r"tutti mi ignorano",
-            r"non mi calcola",
-            r"non rispondi mai"
-        ],
-        "sottinteso_sessuale": [
-            r"da soli",
-            r"senza niente",
-            r"intimo",
-            r"vicini",
-            r"toccare"
-        ],
-        "rimpianto": [
-            r"se solo",
-            r"avrei dovuto",
-            r"potevo",
-            r"ormai è tardi",
-            r"peccato che"
-        ],
-        "speranza": [
-            r"spero che",
-            r"magari",
-            r"chissà che",
-            r"forse un giorno",
-            r"se tutto va bene"
-        ]
-    }
-    
-    # Segnali di incongruenza (tra ciò che dice e ciò che prova)
-    INCONGRUENCE_SIGNALS = {
-        "risata_finta": [
-            "ahah", "lol", "haha",
-            "che ridere", "molto divertente"
-        ],
-        "ottimismo_forzato": [
-            "tutto bene", "tutto ok", "nessun problema",
-            "va tutto bene", "non preoccuparti"
-        ],
-        "minimizzazione": [
-            "non importa", "fa niente", "lascia stare",
-            "non è niente", "roba da poco"
-        ]
-    }
-    
     def __init__(self):
-        self.implicit_patterns = self.IMPLICIT_PATTERNS
-        self.incongruence_signals = self.INCONGRUENCE_SIGNALS
-        
-        # Compila regex
-        self._compiled_patterns = {}
-        for category, patterns in self.implicit_patterns.items():
-            self._compiled_patterns[category] = [
-                re.compile(p, re.IGNORECASE) for p in patterns
-            ]
-        
-        # Cache per analisi recenti
-        self.recent_extractions = {}
-        self.CACHE_SIZE = 100
-        
-        logger.info("🔍 Implicit Extractor inizializzato")
+        logger.debug("🔍 Implicit Extractor inizializzato")
     
-    async def extract(self, text: str, user_id: Optional[str] = None, 
-                     context: Optional[Dict] = None) -> Dict:
+    def extract(self, text: str, history: Optional[List[Dict]] = None) -> Dict[str, Any]:
         """
-        Estrae ciò che è implicito nel messaggio.
-        """
-        if not text:
-            return self._empty_result()
+        Estrae informazioni implicite dal messaggio.
         
+        Args:
+            text: Testo del messaggio
+            history: Cronologia recente (opzionale)
+        
+        Returns:
+            Dict con informazioni implicite
+        """
         text_lower = text.lower()
         
-        # Rileva pattern impliciti
-        detected_patterns = self._detect_implicit_patterns(text_lower)
-        
-        # Rileva incongruenze
-        incongruences = self._detect_incongruences(text_lower)
-        
-        # Analizza i silenzi (se contesto disponibile)
-        silences = self._analyze_silences(context) if context else {}
-        
-        # Cosa nasconde veramente
-        hidden_mood = self._infer_hidden_mood(text_lower, detected_patterns)
-        
-        # Cosa desidera veramente
-        hidden_desire = self._infer_hidden_desire(text_lower, detected_patterns)
-        
-        # Livello di sincerità
-        sincerity = self._calculate_sincerity(text_lower, incongruences)
-        
         result = {
-            "timestamp": datetime.now().isoformat(),
-            
-            # Categorie implicite rilevate
-            "detected_patterns": detected_patterns,
-            
-            # Emozione nascosta
-            "hidden_mood": hidden_mood,
-            "hidden_desire": hidden_desire,
-            
-            # Incongruenze
-            "incongruences": incongruences,
-            "sincerity": sincerity,  # 0-1, quanto è sincero
-            
-            # Silenzi (se disponibili)
-            "silence_analysis": silences,
-            
-            # Interpretazione
-            "interpretation": self._generate_interpretation(
-                detected_patterns, hidden_mood, hidden_desire, incongruences
-            ),
-            
-            # Per il prompt
-            "summary": self._generate_summary(
-                detected_patterns, hidden_mood, hidden_desire
-            )
+            'mood': self._extract_mood(text_lower),
+            'needs': self._extract_needs(text_lower),
+            'topics': self._extract_topics(text_lower),
+            'contradictions': [],
+            'hidden_requests': self._extract_hidden_requests(text_lower),
+            'timing': self._extract_timing(text_lower),
+            'intensity': self._extract_intensity(text_lower)
         }
+        
+        # Se c'è storia, cerca contraddizioni
+        if history:
+            result['contradictions'] = self._find_contradictions(text, history)
         
         return result
     
-    def _detect_implicit_patterns(self, text: str) -> Dict[str, float]:
+    def _extract_mood(self, text: str) -> Dict[str, float]:
         """
-        Rileva pattern di cose non dette.
-        Restituisce categorie con punteggio di confidenza.
+        Estrae l'umore implicito dallo stile di scrittura.
         """
-        detected = {}
+        mood = {}
         
-        for category, patterns in self._compiled_patterns.items():
-            confidence = 0.0
-            matches = 0
-            
-            for pattern in patterns:
-                if pattern.search(text):
-                    matches += 1
-                    confidence += 0.3  # base per match
-            
-            if matches > 0:
-                # Normalizza
-                confidence = min(1.0, confidence)
-                detected[category] = confidence
+        # Lunghezza frasi (frasi corte = agitazione, lunghe = calma)
+        sentences = re.split(r'[.!?]+', text)
+        avg_sentence_length = sum(len(s.split()) for s in sentences) / len(sentences) if sentences else 0
         
-        return detected
+        if avg_sentence_length < 3:
+            mood['agitation'] = 0.7
+        elif avg_sentence_length > 15:
+            mood['calm'] = 0.6
+        
+        # Uso della punteggiatura
+        if '!' in text:
+            mood['excitement'] = min(1.0, mood.get('excitement', 0) + 0.4)
+        if '?' in text:
+            mood['curiosity'] = min(1.0, mood.get('curiosity', 0) + 0.3)
+        if '...' in text:
+            mood['hesitation'] = 0.5
+            mood['thoughtful'] = 0.6
+        
+        # Uso delle maiuscole
+        words = text.split()
+        all_caps = sum(1 for w in words if w.isupper() and len(w) > 1)
+        if all_caps > 1:
+            mood['anger'] = min(1.0, mood.get('anger', 0) + 0.5)
+        
+        return mood
     
-    def _detect_incongruences(self, text: str) -> Dict[str, float]:
+    def _extract_needs(self, text: str) -> List[str]:
         """
-        Rileva segnali di incongruenza (dice una cosa ma ne pensa un'altra).
+        Estrae bisogni impliciti.
         """
-        incongruences = {}
+        needs = []
         
-        for category, signals in self.incongruence_signals.items():
-            for signal in signals:
-                if signal in text:
-                    incongruences[category] = 0.7
-                    break
+        # Bisogno di attenzione
+        attention_phrases = ['mi ascolti', 'ci sei', 'rispondi', 'ci sei?']
+        if any(p in text for p in attention_phrases):
+            needs.append('attention')
         
-        return incongruences
+        # Bisogno di conforto
+        comfort_phrases = ['tutto male', 'che tristezza', 'mi sento giù', 'non ce la faccio']
+        if any(p in text for p in comfort_phrases):
+            needs.append('comfort')
+        
+        # Bisogno di validazione
+        validation_phrases = ['hai ragione', 'dimmi che', 'conferma', 'vero?']
+        if any(p in text for p in validation_phrases):
+            needs.append('validation')
+        
+        # Bisogno di intimità
+        intimacy_phrases = ['vicino', 'abbraccio', 'calore', 'dolcezza']
+        if any(p in text for p in intimacy_phrases):
+            needs.append('intimacy')
+        
+        return needs
     
-    def _analyze_silences(self, context: Dict) -> Dict:
+    def _extract_topics(self, text: str) -> List[str]:
         """
-        Analizza i silenzi tra i messaggi.
+        Estrae i topic principali (anche se non esplicitamente nominati).
         """
-        if not context:
-            return {}
+        topics = []
         
-        now = datetime.now()
-        last_message_time = context.get("last_message_time")
+        # Topic work
+        work_words = ['lavoro', 'ufficio', 'colleghi', 'capo', 'stipendio', 'carriera']
+        if any(w in text for w in work_words):
+            topics.append('lavoro')
         
-        if not last_message_time:
-            return {}
+        # Topic relazioni
+        relationship_words = ['amico', 'fidanzato', 'ragazzo', 'moglie', 'marito', 'famiglia']
+        if any(w in text for w in relationship_words):
+            topics.append('relazioni')
         
-        # Calcola tempo dall'ultimo messaggio
-        if isinstance(last_message_time, str):
-            last_message_time = datetime.fromisoformat(last_message_time)
+        # Topic salute
+        health_words = ['salute', 'dottore', 'medico', 'malattia', 'dolore', 'stanco']
+        if any(w in text for w in health_words):
+            topics.append('salute')
         
-        seconds_since = (now - last_message_time).total_seconds()
-        minutes_since = seconds_since / 60
+        # Topic tempo libero
+        leisure_words = ['weekend', 'vacanza', 'viaggio', 'festa', 'divertimento']
+        if any(w in text for w in leisure_words):
+            topics.append('tempo_libero')
         
-        result = {
-            "seconds_since_last": seconds_since,
-            "minutes_since_last": minutes_since,
-            "interpretation": self._interpret_silence(minutes_since, context)
+        return topics
+    
+    def _extract_hidden_requests(self, text: str) -> List[str]:
+        """
+        Estrae richieste implicite (cose che l'utente vuole ma non chiede direttamente).
+        """
+        hidden = []
+        
+        # Richiesta implicita di foto
+        if 'come sei' in text or 'fammi vedere' in text:
+            hidden.append('foto')
+        
+        # Richiesta implicita di attenzione
+        if 'nessuno mi capisce' in text or 'solo tu' in text:
+            hidden.append('attenzione_esclusiva')
+        
+        # Richiesta implicita di rassicurazione
+        if 'non sono abbastanza' in text or 'non valgo' in text:
+            hidden.append('rassicurazione')
+        
+        # Richiesta implicita di consiglio
+        if 'cosa faresti' in text or 'come ti comporteresti' in text:
+            hidden.append('consiglio')
+        
+        return hidden
+    
+    def _extract_timing(self, text: str) -> Dict[str, Any]:
+        """
+        Estrae riferimenti temporali impliciti.
+        """
+        timing = {
+            'urgency': False,
+            'reference_to_past': False,
+            'reference_to_future': False,
+            'time_phrases': []
         }
         
-        return result
+        # Urgenza
+        if 'subito' in text or 'ora' in text or 'immediatamente' in text:
+            timing['urgency'] = True
+            timing['time_phrases'].append('urgente')
+        
+        # Passato
+        past_phrases = ['ieri', 'scorso', 'fa', 'prima', 'già']
+        if any(p in text for p in past_phrases):
+            timing['reference_to_past'] = True
+            timing['time_phrases'].append('passato')
+        
+        # Futuro
+        future_phrases = ['domani', 'prossimo', 'dopo', 'più tardi', 'poi']
+        if any(p in text for p in future_phrases):
+            timing['reference_to_future'] = True
+            timing['time_phrases'].append('futuro')
+        
+        return timing
     
-    def _interpret_silence(self, minutes: float, context: Dict) -> str:
+    def _extract_intensity(self, text: str) -> float:
         """
-        Interpreta cosa significa un silenzio.
+        Estrae l'intensità emotiva implicita.
         """
-        if minutes < 1:
-            return "risposta immediata"
-        elif minutes < 5:
-            return "pausa normale"
-        elif minutes < 15:
-            return "sta pensando"
-        elif minutes < 60:
-            return "distratto/a"
-        elif minutes < 180:
-            return "assente"
-        else:
-            return "probabilmente non vuole più parlare"
+        intensity = 0.0
+        
+        # Lunghezza (testi lunghi = più intensi)
+        intensity += min(0.3, len(text) / 1000)
+        
+        # Punteggiatura enfatica
+        intensity += text.count('!') * 0.1
+        intensity += text.count('?') * 0.05
+        intensity += text.count('...') * 0.1
+        
+        # Parole intense
+        intense_words = ['mai', 'sempre', 'tutto', 'niente', 'assolutamente', 'davvero']
+        intensity += sum(0.1 for w in intense_words if w in text)
+        
+        return min(1.0, intensity)
     
-    def _infer_hidden_mood(self, text: str, detected: Dict) -> Dict:
+    def _find_contradictions(self, current_text: str, history: List[Dict]) -> List[Dict]:
         """
-        Inferisce l'umore nascosto (quello che non dice).
+        Trova contraddizioni tra il messaggio attuale e la cronologia.
         """
-        # Mappa pattern a emozioni nascoste
-        mood_map = {
-            "dubbio": "insicurezza",
-            "paura": "ansia",
-            "gelosia": "possessività",
-            "insicurezza": "bassa autostima",
-            "bisogno_di_attenzione": "solitudine",
-            "rimpianto": "tristezza",
-            "speranza": "ottimismo",
-            "desiderio_nascosto": "frustrazione"
-        }
+        contradictions = []
         
-        hidden = {}
-        for pattern, confidence in detected.items():
-            if pattern in mood_map:
-                hidden[mood_map[pattern]] = confidence
+        if len(history) < 4:  # Serve abbastanza contesto
+            return contradictions
         
-        if not hidden:
-            return {"emotion": "neutro", "confidence": 0.5}
+        # Prendi ultimi messaggi dell'utente
+        user_messages = [h['content'] for h in history if h['role'] == 'user'][-3:]
         
-        # Trova l'emozione dominante
-        dominant = max(hidden, key=hidden.get)
-        return {
-            "emotion": dominant,
-            "confidence": hidden[dominant],
-            "all": hidden
-        }
-    
-    def _infer_hidden_desire(self, text: str, detected: Dict) -> Dict:
-        """
-        Inferisce il desiderio nascosto.
-        """
-        desire_map = {
-            "desiderio_nascosto": "qualcosa che non osa chiedere",
-            "sottinteso_sessuale": "intimità fisica",
-            "bisogno_di_attenzione": "attenzione e affetto",
-            "gelosia": "esclusività",
-            "speranza": "cambiamento positivo"
-        }
+        if not user_messages:
+            return contradictions
         
-        desires = {}
-        for pattern, confidence in detected.items():
-            if pattern in desire_map:
-                desires[desire_map[pattern]] = confidence
+        # Confronta con messaggio attuale
+        current_lower = current_text.lower()
         
-        if not desires:
-            return {"desire": "non evidente", "confidence": 0.0}
-        
-        dominant = max(desires, key=desires.get)
-        return {
-            "desire": dominant,
-            "confidence": desires[dominant],
-            "all": desires
-        }
-    
-    def _calculate_sincerity(self, text: str, incongruences: Dict) -> float:
-        """
-        Calcola quanto è sincero il messaggio (0-1).
-        """
-        # Base: assumptione di sincerità
-        sincerity = 0.8
-        
-        # Penalità per incongruenze
-        sincerity -= len(incongruences) * 0.2
-        
-        # Segnali linguistici di insincerità
-        insincerity_signals = [
-            "diciamo", "praticamente", "in pratica",
-            "tipo che", "cioè", "nel senso"
+        # Cerca affermazioni opposte
+        opposite_pairs = [
+            ('mi piace', 'non mi piace'),
+            ('ti amo', 'non ti amo'),
+            ('ci sto', 'non ci sto'),
+            ('vengo', 'non vengo'),
+            ('sì', 'no'),
+            ('vero', 'falso')
         ]
         
-        for signal in insincerity_signals:
-            if signal in text:
-                sincerity -= 0.1
+        for pos, neg in opposite_pairs:
+            if pos in current_lower:
+                # Controlla se in passato ha detto il contrario
+                for old_msg in user_messages:
+                    if neg in old_msg.lower():
+                        contradictions.append({
+                            'type': 'opinion_change',
+                            'current': pos,
+                            'previous': neg,
+                            'previous_message': old_msg[:50]
+                        })
+                        break
         
-        return max(0.0, min(1.0, sincerity))
-    
-    def _generate_interpretation(self, detected: Dict, hidden_mood: Dict, 
-                                hidden_desire: Dict, incongruences: Dict) -> str:
-        """
-        Genera un'interpretazione in linguaggio naturale.
-        """
-        parts = []
-        
-        if detected:
-            main_pattern = max(detected, key=detected.get)
-            pattern_desc = self._get_pattern_description(main_pattern)
-            parts.append(pattern_desc)
-        
-        if hidden_mood.get("emotion") and hidden_mood["emotion"] != "neutro":
-            parts.append(f"sembra {hidden_mood['emotion']} anche se non lo dice")
-        
-        if hidden_desire.get("desire") and hidden_desire["desire"] != "non evidente":
-            parts.append(f"forse desidera {hidden_desire['desire']}")
-        
-        if incongruences:
-            parts.append("c'è qualcosa che non quadra")
-        
-        if not parts:
-            return "sembra sincero, niente di particolarmente nascosto"
-        
-        return ". ".join(parts).capitalize() + "."
-    
-    def _generate_summary(self, detected: Dict, hidden_mood: Dict, 
-                         hidden_desire: Dict) -> str:
-        """
-        Genera un riassunto breve per il prompt.
-        """
-        parts = []
-        
-        if hidden_mood.get("emotion") and hidden_mood["emotion"] != "neutro":
-            parts.append(f"sembra {hidden_mood['emotion']}")
-        
-        if hidden_desire.get("desire") and hidden_desire["desire"] != "non evidente":
-            parts.append(f"desidera {hidden_desire['desire']}")
-        
-        if not parts:
-            return "nessun implicito rilevante"
-        
-        return ", ".join(parts)
-    
-    def _get_pattern_description(self, pattern: str) -> str:
-        """Restituisce una descrizione per un pattern"""
-        descriptions = {
-            "dubbio": "è in dubbio",
-            "desiderio_nascosto": "ha un desiderio inespresso",
-            "paura": "ha paura",
-            "gelosia": "è geloso",
-            "insicurezza": "è insicuro",
-            "bisogno_di_attenzione": "cerca attenzione",
-            "sottinteso_sessuale": "sottintende qualcosa di intimo",
-            "rimpianto": "ha rimpianti",
-            "speranza": "spera in qualcosa"
-        }
-        return descriptions.get(pattern, pattern)
-    
-    def _empty_result(self) -> Dict:
-        """Restituisce un risultato vuoto"""
-        return {
-            "detected_patterns": {},
-            "hidden_mood": {"emotion": "neutro", "confidence": 0.0},
-            "hidden_desire": {"desire": "non evidente", "confidence": 0.0},
-            "incongruences": {},
-            "sincerity": 1.0,
-            "silence_analysis": {},
-            "interpretation": "nessun implicito rilevato",
-            "summary": "nessun implicito"
-        }
-
-# Istanza globale
-implicit_extractor = ImplicitExtractor()
+        return contradictions

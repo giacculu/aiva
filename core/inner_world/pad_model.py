@@ -1,309 +1,277 @@
 """
-AIVA 2.0 – MODELLO EMOZIONALE PAD (Pleasure-Arousal-Dominance)
-Le emozioni di AIVA in uno spazio vettoriale continuo 3D.
-Non più 8 mood, ma infinite sfumature.
+Modello PAD (Pleasure-Arousal-Dominance) per emozioni continue
 """
-
-import numpy as np
-import math
-from datetime import datetime, timedelta
-from typing import Dict, Tuple, Optional, List
-from loguru import logger
-import json
 import random
+import math
+from typing import Dict, Tuple, List, Optional
+from datetime import datetime, timedelta
+from loguru import logger
 
 class PADModel:
     """
-    Modello emotivo basato su tre dimensioni:
-    - Pleasure (P): da -1 (triste, infelice) a +1 (felice, contenta)
-    - Arousal (A): da -1 (calma, rilassata) a +1 (eccitata, agitata)
-    - Dominance (D): da -1 (sottomessa, insicura) a +1 (dominante, sicura)
+    Spazio emotivo tridimensionale continuo.
+    Ogni emozione è un punto in questo spazio.
     
-    Ogni emozione complessa è un punto in questo spazio 3D.
+    Piacevolezza (P): -1 (triste) a +1 (felice)
+    Attivazione (A): -1 (calmo) a +1 (eccitato)
+    Dominanza (D): -1 (sottomesso) a +1 (dominante)
     """
     
-    # Emozioni di base come punti di riferimento
-    EMOTION_ANCHORS = {
-        "felice": {"P": 0.8, "A": 0.4, "D": 0.6, "desc": "Contento, gioioso"},
-        "euforica": {"P": 0.9, "A": 0.8, "D": 0.7, "desc": "Estasiata, al settimo cielo"},
-        "triste": {"P": -0.7, "A": -0.3, "D": -0.4, "desc": "Triste, giù di morale"},
-        "malinconica": {"P": -0.3, "A": -0.6, "D": -0.2, "desc": "Nostalgica, pensierosa"},
-        "arrabbiata": {"P": -0.5, "A": 0.7, "D": 0.3, "desc": "Infastidita, irritata"},
-        "calma": {"P": 0.3, "A": -0.7, "D": 0.2, "desc": "Rilassata, serena"},
-        "ansiosa": {"P": -0.2, "A": 0.6, "D": -0.6, "desc": "Preoccupata, tesa"},
-        "sicura": {"P": 0.5, "A": 0.1, "D": 0.8, "desc": "Fiduciosa, determinata"},
-        "innamorata": {"P": 0.9, "A": 0.5, "D": 0.3, "desc": "Affettuosa, tenera"},
-        "stanca": {"P": -0.1, "A": -0.8, "D": -0.3, "desc": "Affaticata, senza energie"},
-        "curiosa": {"P": 0.4, "A": 0.5, "D": 0.1, "desc": "Interessata, desiderosa di scoprire"},
-        "offesa": {"P": -0.6, "A": 0.3, "D": -0.2, "desc": "Ferita nell'orgoglio"},
-        "grata": {"P": 0.7, "A": 0.2, "D": 0.2, "desc": "Riconoscente, apprezzativa"},
-        "sola": {"P": -0.5, "A": -0.4, "D": -0.5, "desc": "Isolata, abbandonata"},
-        "giocosa": {"P": 0.6, "A": 0.6, "D": 0.4, "desc": "Scherzosa, leggera"},
+    # Emozioni di base come punti nello spazio PAD
+    EMOTIONS = {
+        'felice': (0.8, 0.5, 0.4),
+        'entusiasta': (0.9, 0.8, 0.6),
+        'contenta': (0.6, 0.2, 0.3),
+        'serena': (0.5, -0.3, 0.2),
+        'rilassata': (0.4, -0.6, 0.1),
+        'triste': (-0.7, -0.3, -0.4),
+        'malinconica': (-0.4, -0.5, -0.2),
+        'arrabbiata': (-0.5, 0.7, 0.6),
+        'frustrata': (-0.3, 0.4, -0.3),
+        'ansiosa': (-0.2, 0.6, -0.5),
+        'sorpresa': (0.2, 0.8, 0.0),
+        'innamorata': (0.9, 0.6, 0.2),
+        'grata': (0.7, 0.1, 0.2),
+        'curiosa': (0.3, 0.5, 0.1),
+        'annoiata': (-0.4, -0.5, -0.3),
+        'offesa': (-0.6, 0.3, -0.4),
     }
     
-    # Fattori di decadimento naturale (le emozioni svaniscono col tempo)
-    DECAY_RATES = {
-        "P": 0.05,  # per ora
-        "A": 0.08,
-        "D": 0.03,
-    }
-    
-    def __init__(self, initial_state: Optional[Dict] = None):
+    def __init__(self, initial_emotion: str = 'serena'):
         """
         Inizializza lo stato emotivo.
-        Se non specificato, parte da uno stato casuale ma tendente al neutro.
+        
+        Args:
+            initial_emotion: Emozione iniziale (default: serena)
         """
-        if initial_state:
-            self.P = np.clip(initial_state.get("P", 0.0), -1.0, 1.0)
-            self.A = np.clip(initial_state.get("A", 0.0), -1.0, 1.0)
-            self.D = np.clip(initial_state.get("D", 0.0), -1.0, 1.0)
+        if initial_emotion in self.EMOTIONS:
+            self.p, self.a, self.d = self.EMOTIONS[initial_emotion]
         else:
-            # Stato iniziale: leggermente positivo, calmo, neutro
-            self.P = random.uniform(0.1, 0.3)
-            self.A = random.uniform(-0.2, 0.2)
-            self.D = random.uniform(-0.1, 0.1)
+            self.p, self.a, self.d = 0.0, 0.0, 0.0
         
-        self.last_update = datetime.now()
-        self.emotional_history = []  # Traccia per analisi
+        # Storia delle emozioni (per tracciare cambiamenti)
+        self.history = []
+        self._record_state(initial_emotion)
         
-        # Memoria delle emozioni recenti (max 100)
-        self.recent_states = []
-        
-        logger.info(f"🎭 PAD Model inizializzato: P={self.P:.2f}, A={self.A:.2f}, D={self.D:.2f}")
+        logger.debug(f"❤️ Modello PAD inizializzato: P={self.p:.2f}, A={self.a:.2f}, D={self.d:.2f}")
     
-    def update_from_message(self, sentiment: Dict, intent: Dict, implicit: Dict):
-        """
-        Aggiorna lo stato emotivo in base a un messaggio ricevuto.
-        sentiment: risultato dell'analisi del tono
-        intent: intenzione dell'utente
-        implicit: cosa non ha detto
-        """
-        # Calcola tempo dall'ultimo aggiornamento (per decadimento)
-        now = datetime.now()
-        hours_passed = (now - self.last_update).total_seconds() / 3600
-        self._apply_decay(hours_passed)
-        
-        # Impatto del sentiment
-        if sentiment:
-            # Positività/negatività influenza P
-            p_impact = sentiment.get("positivity", 0) * 0.3
-            self.P += p_impact
-            
-            # Arousal (eccitazione) dal tono
-            a_impact = sentiment.get("arousal", 0) * 0.2
-            self.A += a_impact
-        
-        # Impatto dell'intento
-        if intent:
-            intent_type = intent.get("primary", "unknown")
-            confidence = intent.get("confidence", 0.5)
-            
-            if intent_type == "compliment":
-                self.P += 0.2 * confidence
-                self.D += 0.1 * confidence
-            elif intent_type == "insult":
-                self.P -= 0.4 * confidence
-                self.D -= 0.2 * confidence
-                self.A += 0.2 * confidence  # si agita
-            elif intent_type == "request_help":
-                self.D -= 0.1 * confidence  # si sente meno dominante
-            elif intent_type == "declaration":
-                self.P += 0.3 * confidence
-                self.A += 0.2 * confidence
-        
-        # Impatto dell'implicito
-        if implicit:
-            hidden = implicit.get("hidden_mood", "neutral")
-            if hidden == "triste":
-                self.P -= 0.1
-            elif hidden == "felice":
-                self.P += 0.1
-        
-        # Limita ai range
-        self.P = np.clip(self.P, -1.0, 1.0)
-        self.A = np.clip(self.A, -1.0, 1.0)
-        self.D = np.clip(self.D, -1.0, 1.0)
-        
-        # Salva stato
-        self.recent_states.append({
-            "timestamp": now,
-            "P": self.P,
-            "A": self.A,
-            "D": self.D
+    def _record_state(self, source: str = "init"):
+        """Registra lo stato attuale nella storia."""
+        self.history.append({
+            'timestamp': datetime.now(),
+            'p': self.p,
+            'a': self.a,
+            'd': self.d,
+            'source': source
         })
-        if len(self.recent_states) > 100:
-            self.recent_states.pop(0)
-        
-        self.last_update = now
+        # Mantieni solo ultimi 1000 stati
+        if len(self.history) > 1000:
+            self.history = self.history[-1000:]
     
-    def _apply_decay(self, hours: float):
-        """Le emozioni naturalmente svaniscono col tempo"""
-        if hours <= 0:
-            return
-        
-        # Verso il neutro (0) ma non troppo veloce
-        if self.P > 0:
-            self.P = max(0, self.P - self.DECAY_RATES["P"] * hours)
-        elif self.P < 0:
-            self.P = min(0, self.P + self.DECAY_RATES["P"] * hours)
-        
-        if self.A > 0:
-            self.A = max(0, self.A - self.DECAY_RATES["A"] * hours)
-        elif self.A < 0:
-            self.A = min(0, self.A + self.DECAY_RATES["A"] * hours)
-        
-        if self.D > 0:
-            self.D = max(0, self.D - self.DECAY_RATES["D"] * hours)
-        elif self.D < 0:
-            self.D = min(0, self.D + self.DECAY_RATES["D"] * hours)
+    # ========== MUTAZIONI EMOZIONALI ==========
     
-    def get_state(self) -> Dict:
-        """Restituisce lo stato emotivo attuale"""
+    def shift(self, dp: float = 0.0, da: float = 0.0, dd: float = 0.0, source: str = "shift"):
+        """
+        Sposta lo stato emotivo di un delta.
+        I valori sono automaticamente limitati a [-1, 1].
+        """
+        self.p = max(-1.0, min(1.0, self.p + dp))
+        self.a = max(-1.0, min(1.0, self.a + da))
+        self.d = max(-1.0, min(1.0, self.d + dd))
+        self._record_state(source)
+    
+    def set_emotion(self, emotion_name: str, intensity: float = 1.0):
+        """
+        Imposta direttamente un'emozione (con possibile intensità).
+        """
+        if emotion_name in self.EMOTIONS:
+            base_p, base_a, base_d = self.EMOTIONS[emotion_name]
+            self.p = base_p * intensity
+            self.a = base_a * intensity
+            self.d = base_d * intensity
+            self._record_state(f"set_{emotion_name}")
+    
+    def blend(self, emotion1: str, emotion2: str, weight: float = 0.5):
+        """
+        Combina due emozioni (weight 0 = solo emotion1, 1 = solo emotion2).
+        """
+        p1, a1, d1 = self.EMOTIONS[emotion1]
+        p2, a2, d2 = self.EMOTIONS[emotion2]
+        
+        self.p = p1 * (1 - weight) + p2 * weight
+        self.a = a1 * (1 - weight) + a2 * weight
+        self.d = d1 * (1 - weight) + d2 * weight
+        
+        self._record_state(f"blend_{emotion1}_{emotion2}")
+    
+    def react_to_message(self, message: str, sentiment_score: Optional[float] = None):
+        """
+        Modifica lo stato emotivo in base a un messaggio ricevuto.
+        """
+        # Se non abbiamo sentiment, usiamo un'euristica
+        if sentiment_score is None:
+            # Analisi semplificata
+            positive_words = ['❤️', '💕', 'grazie', 'carino', 'bello', 'amore']
+            negative_words = ['no', 'mai', 'brutto', 'cattivo', 'odio']
+            
+            msg_lower = message.lower()
+            pos = sum(1 for w in positive_words if w in msg_lower)
+            neg = sum(1 for w in negative_words if w in msg_lower)
+            
+            if pos > neg:
+                sentiment_score = 0.3
+            elif neg > pos:
+                sentiment_score = -0.3
+            else:
+                sentiment_score = 0.0
+        
+        # Modifica P (piacevolezza) in base al sentiment
+        self.shift(dp=sentiment_score * 0.2, source="message_reaction")
+    
+    # ========== STATO ATTUALE ==========
+    
+    def get_state(self) -> Dict[str, float]:
+        """Restituisce lo stato emotivo attuale."""
         return {
-            "P": self.P,
-            "A": self.A,
-            "D": self.D,
-            "timestamp": self.last_update.isoformat()
+            'pleasure': self.p,
+            'arousal': self.a,
+            'dominance': self.d
         }
     
-    def get_current_vector(self) -> np.ndarray:
-        """Restituisce il vettore 3D per similarity search"""
-        return np.array([self.P, self.A, self.D])
-    
-    def get_closest_emotion(self) -> Dict:
+    def get_dominant_emotion(self) -> Tuple[str, float]:
         """
-        Trova l'emozione nominale più vicina nello spazio PAD.
-        Utile per descrivere a parole lo stato.
+        Trova l'emozione più vicina nello spazio PAD.
+        Restituisce (nome_emozione, distanza).
         """
-        current = np.array([self.P, self.A, self.D])
-        
-        closest = None
         min_dist = float('inf')
+        closest = 'neutra'
         
-        for name, coords in self.EMOTION_ANCHORS.items():
-            anchor = np.array([coords["P"], coords["A"], coords["D"]])
-            dist = np.linalg.norm(current - anchor)
+        for emotion, (ep, ea, ed) in self.EMOTIONS.items():
+            # Distanza euclidea
+            dist = math.sqrt(
+                (self.p - ep)**2 + 
+                (self.a - ea)**2 + 
+                (self.d - ed)**2
+            )
             
             if dist < min_dist:
                 min_dist = dist
-                closest = name
+                closest = emotion
         
-        return {
-            "name": closest,
-            "description": self.EMOTION_ANCHORS[closest]["desc"],
-            "distance": min_dist,
-            "raw": self.get_state()
+        # Normalizza distanza (max possibile è ~3.46)
+        similarity = 1.0 - (min_dist / 3.5)
+        return closest, similarity
+    
+    def get_emotion_name(self) -> str:
+        """Restituisce il nome dell'emozione dominante."""
+        name, _ = self.get_dominant_emotion()
+        return name
+    
+    def get_emotion_emoji(self) -> str:
+        """Restituisce un emoji corrispondente all'emozione."""
+        emotion = self.get_emotion_name()
+        
+        emoji_map = {
+            'felice': '😊',
+            'entusiasta': '🤩',
+            'contenta': '😌',
+            'serena': '😇',
+            'rilassata': '😎',
+            'triste': '😔',
+            'malinconica': '🥺',
+            'arrabbiata': '😠',
+            'frustrata': '😤',
+            'ansiosa': '😰',
+            'sorpresa': '😲',
+            'innamorata': '🥰',
+            'grata': '🙏',
+            'curiosa': '🤔',
+            'annoiata': '😑',
+            'offesa': '😒',
         }
-    
-    def get_state_description(self) -> Dict:
-        """
-        Descrizione dettagliata per il prompt.
-        """
-        emotion = self.get_closest_emotion()
         
-        # Genera frasi descrittive per ogni dimensione
-        p_desc = self._describe_pleasure()
-        a_desc = self._describe_arousal()
-        d_desc = self._describe_dominance()
-        
-        return {
-            "summary": f"Mi sento {emotion['name']}",
-            "pleasure_text": p_desc,
-            "arousal_text": a_desc,
-            "dominance_text": d_desc,
-            "emotion": emotion['name'],
-            "detailed": f"{p_desc}, {a_desc}, {d_desc}"
-        }
+        return emoji_map.get(emotion, '😐')
     
-    def _describe_pleasure(self) -> str:
-        if self.P > 0.7:
-            return "sono al settimo cielo"
-        elif self.P > 0.3:
-            return "sono contenta"
-        elif self.P > -0.3:
-            return "mi sento neutrale"
-        elif self.P > -0.7:
-            return "sono giù di morale"
+    def get_description(self) -> str:
+        """Restituisce una descrizione testuale dello stato emotivo."""
+        emotion, similarity = self.get_dominant_emotion()
+        emoji = self.get_emotion_emoji()
+        
+        if similarity > 0.8:
+            return f"{emoji} decisamente {emotion}"
+        elif similarity > 0.5:
+            return f"{emoji} {emotion}"
         else:
-            return "sono devastata"
+            return f"{emoji} {emotion} (con sfumature)"
     
-    def _describe_arousal(self) -> str:
-        if self.A > 0.7:
-            return "sono iperattiva"
-        elif self.A > 0.3:
-            return "sono carica"
-        elif self.A > -0.3:
-            return "sono calma"
-        elif self.A > -0.7:
-            return "sono rilassata"
-        else:
-            return "sono spenta"
+    # ========== TENDENZE ==========
     
-    def _describe_dominance(self) -> str:
-        if self.D > 0.7:
-            return "mi sento potente"
-        elif self.D > 0.3:
-            return "mi sento sicura"
-        elif self.D > -0.3:
-            return "mi sento normale"
-        elif self.D > -0.7:
-            return "mi sento insicura"
-        else:
-            return "mi sento sottomessa"
-    
-    def decay(self, hours: Optional[float] = None):
+    def get_trend(self, minutes: int = 60) -> Dict[str, float]:
         """
-        Applica decadimento temporale. Se hours non specificato,
-        calcola dal timestamp.
+        Calcola il trend emotivo degli ultimi N minuti.
         """
-        if hours is None:
-            now = datetime.now()
-            hours = (now - self.last_update).total_seconds() / 3600
-        
-        self._apply_decay(hours)
-        self.last_update = datetime.now()
-    
-    def get_emotional_trend(self, hours: int = 24) -> Dict:
-        """
-        Analizza l'andamento emotivo nelle ultime ore.
-        """
-        if not self.recent_states:
-            return {"trend": "stabile"}
-        
-        cutoff = datetime.now() - timedelta(hours=hours)
-        recent = [s for s in self.recent_states if s["timestamp"] > cutoff]
+        cutoff = datetime.now() - timedelta(minutes=minutes)
+        recent = [h for h in self.history if h['timestamp'] > cutoff]
         
         if len(recent) < 2:
-            return {"trend": "stabile"}
+            return {'p': 0, 'a': 0, 'd': 0}
         
-        p_start = recent[0]["P"]
-        p_end = recent[-1]["P"]
+        first = recent[0]
+        last = recent[-1]
         
-        p_trend = p_end - p_start
-        
-        if p_trend > 0.2:
-            return {"trend": "migliorando", "delta": p_trend}
-        elif p_trend < -0.2:
-            return {"trend": "peggiorando", "delta": p_trend}
-        else:
-            return {"trend": "stabile", "delta": p_trend}
+        return {
+            'p': last['p'] - first['p'],
+            'a': last['a'] - first['a'],
+            'd': last['d'] - first['d']
+        }
     
-    def get_honest_reaction(self) -> str:
-        """
-        Quello che AIVA pensa DAVVERO ma non dice.
-        """
-        emotion = self.get_closest_emotion()
-        
-        if emotion['name'] == "felice":
-            return "in realtà sono felice ma non voglio sembrare troppo entusiasta"
-        elif emotion['name'] == "triste":
-            return "sono triste ma non voglio caricarlo dei miei problemi"
-        elif emotion['name'] == "arrabbiata":
-            return "sono un po' arrabbiata ma non voglio litigare"
-        elif emotion['name'] == "innamorata":
-            return "mi piace ma ho paura di dirlo"
-        else:
-            return f"in realtà mi sento {emotion['name']} ma non lo do a vedere"
+    def is_improving(self) -> bool:
+        """Verifica se l'umore sta migliorando (P in aumento)."""
+        trend = self.get_trend(30)
+        return trend['p'] > 0.1
     
-    def __repr__(self) -> str:
-        return f"PAD(P={self.P:.2f}, A={self.A:.2f}, D={self.D:.2f})"
+    def is_worsening(self) -> bool:
+        """Verifica se l'umore sta peggiorando (P in diminuzione)."""
+        trend = self.get_trend(30)
+        return trend['p'] < -0.1
+    
+    # ========== PERSISTENZA ==========
+    
+    def to_dict(self) -> Dict:
+        """Serializza lo stato per persistenza."""
+        return {
+            'p': self.p,
+            'a': self.a,
+            'd': self.d,
+            'history': [
+                {
+                    'timestamp': h['timestamp'].isoformat(),
+                    'p': h['p'],
+                    'a': h['a'],
+                    'd': h['d'],
+                    'source': h['source']
+                }
+                for h in self.history[-100:]  # Solo ultimi 100
+            ]
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'PADModel':
+        """Ricrea lo stato da dizionario."""
+        instance = cls('serena')
+        instance.p = data.get('p', 0.0)
+        instance.a = data.get('a', 0.0)
+        instance.d = data.get('d', 0.0)
+        
+        # Ricostruisci storia
+        instance.history = []
+        for h in data.get('history', []):
+            instance.history.append({
+                'timestamp': datetime.fromisoformat(h['timestamp']),
+                'p': h['p'],
+                'a': h['a'],
+                'd': h['d'],
+                'source': h['source']
+            })
+        
+        return instance

@@ -1,151 +1,203 @@
 """
-AIVA 2.0 – ESPORTAZIONE DELLA PERSONALITÀ
-Questo file raccoglie lo stato completo della personalità di AIVA
-e lo rende disponibile per il prompt e per altri moduli.
+Personalità completa di AIVA: integra tutti gli aspetti del mondo interiore
 """
-
-from typing import Dict, List, Optional, Any
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 from loguru import logger
 
-class PersonalityExporter:
+from core.inner_world.pad_model import PADModel
+from core.inner_world.circadian import CircadianRhythm
+from core.inner_world.interests import Interests
+from core.inner_world.diary import SecretDiary
+from core.inner_world.diary_analyzer import DiaryAnalyzer
+
+class Personality:
     """
-    Esporta lo stato completo della personalità di AIVA.
-    Integra tutti i moduli: PAD, circadian, interessi, evoluzione, ecc.
+    La personalità completa di AIVA.
+    Integra:
+    - Emozioni (PAD model)
+    - Energia (ciclo circadiano)
+    - Interessi
+    - Diario segreto
+    - Autoriflessione
     """
     
-    def __init__(self):
-        # Riferimenti agli altri moduli (verranno inizializzati dopo)
-        self.pad = None
-        self.circadian = None
-        self.interests = None
-        self.evolution = None
-        self.memory_emotional = None
+    def __init__(self, diary: SecretDiary = None, crypto=None):
+        # Inizializza componenti
+        self.emotions = PADModel('serena')
+        self.energy = CircadianRhythm()
+        self.interests = Interests()
         
-        logger.info("📊 Personality Exporter inizializzato")
+        # Diario (se fornito)
+        self.diary = diary
+        if diary:
+            self.diary_analyzer = DiaryAnalyzer(diary)
+        else:
+            self.diary_analyzer = None
+        
+        # Stato complessivo
+        self.last_update = datetime.now()
+        
+        logger.info("🧠 Personalità completa inizializzata")
     
-    def initialize(self, pad, circadian, interests, evolution, memory_emotional):
-        """Inizializza i riferimenti agli altri moduli"""
-        self.pad = pad
-        self.circadian = circadian
-        self.interests = interests
-        self.evolution = evolution
-        self.memory_emotional = memory_emotional
-        logger.info("🔗 Personality Exporter collegato ai moduli interni")
+    def update(self) -> None:
+        """Aggiorna tutti i componenti interni."""
+        now = datetime.now()
+        hours_passed = (now - self.last_update).total_seconds() / 3600
+        self.last_update = now
+        
+        # Aggiorna energia
+        self.energy.update()
+        
+        # Aggiorna interessi
+        self.interests.update(hours_passed)
     
-    def get_full_state(self) -> Dict:
+    def react_to_message(self, message: str, user_id: Optional[str] = None) -> None:
         """
-        Restituisce lo stato completo della personalità.
+        Reagisce a un messaggio, aggiornando stato interno.
         """
-        if not all([self.pad, self.circadian, self.interests, self.evolution]):
-            return self._default_state()
+        # Aggiorna tempo
+        self.update()
         
-        # Ottieni stato PAD
-        pad_state = self.pad.get_state_description() if self.pad else {}
-        pad_vector = self.pad.get_current_vector() if self.pad else None
+        # Reazione emotiva
+        self.emotions.react_to_message(message)
         
-        # Ottieni stato circadian
-        energy = self.circadian.energy if self.circadian else 0.5
-        energy_desc = self.circadian.get_energy_description() if self.circadian else "normale"
-        time_desc = self.circadian.get_description() if self.circadian else "giornata"
+        # Rafforza interessi
+        self.interests.reinforce_from_message(message)
         
-        # Ottieni interessi
-        current_interests = self.interests.get_current() if self.interests else []
-        interest_levels = self.interests.get_all_levels() if self.interests else {}
-        
-        # Ottieni evoluzione
-        evolution_summary = self.evolution.get_personality_summary() if self.evolution else {}
-        evolution_story = self.evolution.get_evolution_story() if self.evolution else ""
-        
-        # Ottieni memoria emotiva
-        recent_emotions = self.memory_emotional.get_recent_summary() if self.memory_emotional else {}
-        
-        # Costruisci stato completo
-        state = {
-            "timestamp": datetime.now().isoformat(),
-            
-            # Emozioni
-            "emotion": {
-                "primary": pad_state.get("emotion", "neutro"),
-                "pleasure": pad_vector[0] if pad_vector is not None else 0,
-                "arousal": pad_vector[1] if pad_vector is not None else 0,
-                "dominance": pad_vector[2] if pad_vector is not None else 0,
-                "description": pad_state.get("detailed", "normale")
-            },
-            
-            # Energia
-            "energy": {
-                "level": energy,
-                "description": energy_desc,
-                "time_of_day": time_desc
-            },
-            
-            # Interessi
-            "interests": {
-                "current": current_interests,
-                "levels": interest_levels
-            },
-            
-            # Evoluzione
-            "evolution": evolution_summary,
-            "life_story": evolution_story,
-            
-            # Memoria emotiva recente
-            "recent_emotional_memory": recent_emotions,
-            
-            # Sintesi per prompt
-            "summary": self._generate_summary(
-                pad_state, energy_desc, current_interests, evolution_summary
+        # Scrivi nel diario se significativo
+        if self.diary and len(message) > 50 and random.random() < 0.3:
+            self.diary.write(
+                content=f"Ricevuto messaggio: {message[:100]}...",
+                mood=self.emotions.get_emotion_name(),
+                user_id=user_id,
+                importance=0.2
             )
-        }
+    
+    # ========== STATO COMPLESSIVO ==========
+    
+    def get_state(self) -> Dict[str, Any]:
+        """Restituisce lo stato completo della personalità."""
+        emotion_name = self.emotions.get_emotion_name()
+        emotion_emoji = self.emotions.get_emotion_emoji()
         
-        return state
+        return {
+            'emotion': {
+                'name': emotion_name,
+                'emoji': emotion_emoji,
+                'description': self.emotions.get_description(),
+                'pad': self.emotions.get_state()
+            },
+            'energy': {
+                'level': self.energy.get_energy_level(),
+                'description': self.energy.get_energy_description(),
+                'time': self.energy.get_time_of_day()
+            },
+            'interests': {
+                'list': self.interests.get_current_interests(),
+                'description': self.interests.get_context_string()
+            },
+            'typing_modifier': self.energy.get_typing_speed_modifier(),
+            'patience': self.energy.get_patience_modifier(),
+            'curiosity': self.energy.get_curiosity_modifier()
+        }
     
     def get_prompt_context(self) -> str:
         """
-        Restituisce il contesto da inserire nel prompt.
+        Genera contesto per il prompt dell'AI.
         """
-        state = self.get_full_state()
+        state = self.get_state()
         
-        emotion = state["emotion"]["description"]
-        energy = state["energy"]["description"]
-        interests = ", ".join(state["interests"]["current"][:3]) if state["interests"]["current"] else "varie cose"
+        context = f"🎭 **Il tuo stato interiore:**\n"
+        context += f"- Emozione: {state['emotion']['description']}\n"
+        context += f"- Energia: {state['energy']['description']} ({state['energy']['time']})\n"
         
-        # Aggiungi tocco evolutivo
-        if state["evolution"].get("age_days", 0) > 100:
-            maturity = "Ho già una certa esperienza di vita."
-        else:
-            maturity = "Sto ancora scoprendo chi sono."
-        
-        context = f"""STATO INTERIORE ATTUALE:
-- Emozioni: {emotion}
-- Energia: {energy}
-- Interessi del momento: {interests}
-- {maturity}
-
-{state['life_story']}"""
+        if state['interests']['description']:
+            context += f"- Interessi: {state['interests']['description']}\n"
         
         return context
     
-    def _generate_summary(self, pad_state, energy_desc, interests, evolution) -> str:
-        """Genera un riassunto breve"""
-        mood = pad_state.get("emotion", "neutro")
-        
-        if interests:
-            return f"AIVA è {mood}, {energy_desc}, interessata a {', '.join(interests[:2])}"
-        else:
-            return f"AIVA è {mood}, {energy_desc}"
+    # ========== MODULATORI ==========
     
-    def _default_state(self) -> Dict:
-        """Stato di default (quando i moduli non sono inizializzati)"""
+    def get_typing_speed(self) -> float:
+        """Velocità di digitazione (per HumanBehaviorSimulator)."""
+        return self.energy.get_typing_speed_modifier()
+    
+    def get_curiosity_bonus(self) -> float:
+        """Bonus curiosità."""
+        return self.energy.get_curiosity_modifier() * 50  # Scala 0-50
+    
+    def get_patience_level(self) -> float:
+        """Livello pazienza."""
+        return self.energy.get_patience_modifier()
+    
+    # ========== INTERAZIONE CON UTENTI ==========
+    
+    def get_feeling_about_user(self, user_id: str) -> str:
+        """Come si sente verso un utente specifico."""
+        if self.diary_analyzer:
+            trend = self.diary_analyzer.get_user_relationship_trend(user_id)
+            sentiment = trend.get('avg_sentiment', 0)
+            
+            if sentiment > 0.3:
+                return "Ti adoro"
+            elif sentiment > 0:
+                return "Mi piaci"
+            elif sentiment > -0.3:
+                return "Mi sei indifferente"
+            else:
+                return "Non mi stai simpatico"
+        
+        # Fallback
+        return "Non ti conosco abbastanza"
+    
+    def remember_significant_interaction(self, user_id: str, summary: str, 
+                                        emotional_valence: float = 0.0) -> None:
+        """Ricorda un'interazione significativa (nel diario)."""
+        if self.diary:
+            self.diary.write_about_user(
+                user_id=user_id,
+                thought=summary,
+                sentiment=emotional_valence
+            )
+    
+    # ========== RIFLESSIONE ==========
+    
+    def reflect(self) -> str:
+        """
+        Autoriflessione: AIVA pensa a se stessa.
+        """
+        if not self.diary_analyzer:
+            return "Non ho ancora un diario per riflettere."
+        
+        growth = self.diary_analyzer.get_personal_growth()
+        state = self.get_state()
+        
+        reflection = f"Sto pensando a me stessa...\n"
+        reflection += f"In questo momento sono {state['emotion']['description']} e mi sento {state['energy']['description']}.\n"
+        
+        if 'message' in growth:
+            reflection += growth['message']
+        
+        return reflection
+    
+    # ========== PERSISTENZA ==========
+    
+    def to_dict(self) -> Dict:
+        """Serializza per persistenza."""
         return {
-            "emotion": {"primary": "neutro", "description": "normale"},
-            "energy": {"level": 0.5, "description": "normale", "time_of_day": "giornata"},
-            "interests": {"current": [], "levels": {}},
-            "evolution": {},
-            "life_story": "",
-            "summary": "AIVA è normale"
+            'emotions': self.emotions.to_dict(),
+            'energy': self.energy.to_dict(),
+            'interests': self.interests.to_dict(),
+            'last_update': self.last_update.isoformat()
         }
-
-# Istanza globale
-personality_exporter = PersonalityExporter()
+    
+    @classmethod
+    def from_dict(cls, data: Dict, diary=None) -> 'Personality':
+        """Ricrea da dizionario."""
+        instance = cls(diary)
+        instance.emotions = PADModel.from_dict(data.get('emotions', {}))
+        instance.energy = CircadianRhythm.from_dict(data.get('energy', {}))
+        instance.interests = Interests.from_dict(data.get('interests', {}))
+        instance.last_update = datetime.fromisoformat(data.get('last_update', datetime.now().isoformat()))
+        return instance

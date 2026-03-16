@@ -1,341 +1,250 @@
 """
-AIVA 2.0 – GESTIONE PAYPAL NATURALE
-AIVA gestisce il supporto economico in modo umano:
-- Non chiede mai insistentemente
-- Apprezza ogni gesto
-- Si adatta al rapporto con l'utente
-- Regala anche contenuti a chi è speciale
+Integrazione PayPal per pagamenti reali
 """
-
 import os
-import random
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Tuple
-from loguru import logger
-import json
-from pathlib import Path
 import paypalrestsdk
-from config import config
+import random
+from typing import Dict, Optional, Tuple, Any
+from datetime import datetime, timedelta
+from loguru import logger
+from urllib.parse import urlparse
 
-class PayPalHandler:
+class PayPalClient:
     """
-    Gestisce tutto ciò che riguarda il supporto economico.
-    Non è un modulo tecnico, è parte della personalità di AIVA.
+    Client per API PayPal.
+    Gestisce creazione pagamenti, esecuzione e verifica.
     """
     
-    # Soglie per i livelli di supporto
-    SUPPORT_LEVELS = {
-        "base": {"min_total": 5, "max_total": 30, "discount": 0},
-        "regular": {"min_total": 31, "max_total": 100, "discount": 10},
-        "vip": {"min_total": 101, "max_total": 9999, "discount": 20}
-    }
-    
-    # Importi suggeriti per tipo
-    SUGGESTED_AMOUNTS = {
-        "caffè": 3,
-        "aperitivo": 8,
-        "cena": 20,
-        "regalo": 30,
-        "supporto": 10,
-        "speciale": 25
-    }
-    
-    def __init__(self, data_path: str = "data/payments.json"):
-        """
-        Inizializza il gestore pagamenti.
-        """
-        self.data_path = Path(data_path)
-        self.data_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, 
+                 mode: str = "sandbox",
+                 client_id: Optional[str] = None,
+                 client_secret: Optional[str] = None,
+                 webhook_url: Optional[str] = None):
         
-        # Configura PayPal SDK
-        self._setup_paypal()
+        self.mode = mode
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.webhook_url = webhook_url
         
-        # Dati pagamenti
-        self.payments = self._load_data()
-        
-        # Cache
-        self.cache = {}
-        
-        logger.info("💰 PayPal Handler inizializzato")
-    
-    def _setup_paypal(self):
-        """Configura PayPal SDK"""
-        if config.PAYPAL_CLIENT_ID and config.PAYPAL_CLIENT_SECRET:
+        # Inizializza SDK
+        if client_id and client_secret:
             paypalrestsdk.configure({
-                "mode": config.PAYPAL_MODE,
-                "client_id": config.PAYPAL_CLIENT_ID,
-                "client_secret": config.PAYPAL_CLIENT_SECRET
+                "mode": mode,
+                "client_id": client_id,
+                "client_secret": client_secret
             })
-            self.paypal_available = True
+            logger.info(f"💰 PayPal client inizializzato (modalità: {mode})")
         else:
-            self.paypal_available = False
-            logger.warning("⚠️ PayPal non configurato, modalità demo")
+            logger.warning("⚠️ PayPal non configurato, modalità fake attivata")
+        
+        # Database pagamenti (in memoria, in produzione usare DB)
+        self.payments = {}
+        self.user_payments = {}
     
-    def _load_data(self) -> Dict:
-        """Carica dati pagamenti"""
-        if self.data_path.exists():
-            try:
-                with open(self.data_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                return {"users": {}, "transactions": [], "total_received": 0}
-        return {"users": {}, "transactions": [], "total_received": 0}
-    
-    def _save_data(self):
-        """Salva dati pagamenti"""
-        try:
-            with open(self.data_path, 'w', encoding='utf-8') as f:
-                json.dump(self.payments, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"❌ Errore salvataggio pagamenti: {e}")
-    
-    def create_payment_link(self, amount: float, currency: str = "EUR", 
-                           description: str = "Supporto per AIVA") -> Optional[str]:
+    def create_payment(self,
+                      amount: float,
+                      currency: str = "EUR",
+                      description: str = "Supporto per AIVA",
+                      user_id: Optional[str] = None,
+                      return_url: Optional[str] = None,
+                      cancel_url: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
         """
-        Crea un link di pagamento PayPal.
+        Crea un pagamento PayPal.
+        
+        Args:
+            amount: Importo
+            currency: Valuta
+            description: Descrizione
+            user_id: ID utente (per tracciamento)
+            return_url: URL di ritorno dopo pagamento
+            cancel_url: URL di cancellazione
+        
+        Returns:
+            (approval_url, payment_id) oppure (None, None) se errore
         """
-        if not self.paypal_available:
-            # Modalità demo: genera link finto
-            return f"https://paypal.me/AIVA/{amount}"
+        
+        # Modalità fake per test
+        if not self.client_id or not self.client_secret:
+            return self._create_fake_payment(amount, currency, description, user_id)
+        
+        # URL di default
+        if not return_url:
+            return_url = "https://example.com/success"
+        if not cancel_url:
+            cancel_url = "https://example.com/cancel"
         
         try:
             payment = paypalrestsdk.Payment({
                 "intent": "sale",
-                "payer": {"payment_method": "paypal"},
+                "payer": {
+                    "payment_method": "paypal"
+                },
                 "transactions": [{
-                    "amount": {"total": str(amount), "currency": currency},
+                    "amount": {
+                        "total": str(round(amount, 2)),
+                        "currency": currency
+                    },
                     "description": description
                 }],
                 "redirect_urls": {
-                    "return_url": "https://example.com/success",
-                    "cancel_url": "https://example.com/cancel"
+                    "return_url": return_url,
+                    "cancel_url": cancel_url
                 }
             })
             
             if payment.create():
+                # Trova URL di approvazione
+                approval_url = None
                 for link in payment.links:
                     if link.rel == "approval_url":
-                        return link.href
-            
-            return None
-            
+                        approval_url = link.href
+                        break
+                
+                # Salva pagamento
+                payment_id = payment.id
+                self.payments[payment_id] = {
+                    'id': payment_id,
+                    'amount': amount,
+                    'currency': currency,
+                    'description': description,
+                    'user_id': user_id,
+                    'status': 'created',
+                    'created_at': datetime.now(),
+                    'payment_obj': payment
+                }
+                
+                if user_id:
+                    if user_id not in self.user_payments:
+                        self.user_payments[user_id] = []
+                    self.user_payments[user_id].append(payment_id)
+                
+                logger.info(f"💰 Pagamento creato: {payment_id} - {amount}€")
+                return approval_url, payment_id
+            else:
+                logger.error(f"❌ Errore creazione pagamento: {payment.error}")
+                return None, None
+                
         except Exception as e:
-            logger.error(f"❌ Errore creazione pagamento: {e}")
-            return None
+            logger.error(f"❌ Errore PayPal: {e}")
+            return None, None
     
-    def register_payment(self, user_id: str, amount: float, 
-                        payment_id: Optional[str] = None):
+    def _create_fake_payment(self,
+                           amount: float,
+                           currency: str,
+                           description: str,
+                           user_id: Optional[str]) -> Tuple[str, str]:
         """
-        Registra un pagamento ricevuto.
+        Crea un pagamento fittizio per test.
         """
-        timestamp = datetime.now()
+        fake_id = f"FAKE_{datetime.now().timestamp()}"
+        fake_url = f"https://paypal.me/AIVA/{amount}"
         
-        # Aggiorna dati utente
-        if user_id not in self.payments["users"]:
-            self.payments["users"][user_id] = {
-                "total": 0,
-                "count": 0,
-                "first_payment": timestamp.isoformat(),
-                "last_payment": None,
-                "average": 0,
-                "level": None,
-                "notes": []
-            }
-        
-        user = self.payments["users"][user_id]
-        user["total"] += amount
-        user["count"] += 1
-        user["last_payment"] = timestamp.isoformat()
-        user["average"] = user["total"] / user["count"]
-        
-        # Aggiorna livello
-        user["level"] = self._calculate_level(user["total"])
-        
-        # Registra transazione
-        transaction = {
-            "id": payment_id or f"manual_{timestamp.timestamp()}",
-            "user_id": user_id,
-            "amount": amount,
-            "timestamp": timestamp.isoformat(),
-            "note": ""
+        self.payments[fake_id] = {
+            'id': fake_id,
+            'amount': amount,
+            'currency': currency,
+            'description': description,
+            'user_id': user_id,
+            'status': 'created',
+            'created_at': datetime.now(),
+            'fake': True
         }
-        self.payments["transactions"].append(transaction)
         
-        # Mantieni solo ultime 100 transazioni
-        if len(self.payments["transactions"]) > 100:
-            self.payments["transactions"] = self.payments["transactions"][-100:]
+        if user_id:
+            if user_id not in self.user_payments:
+                self.user_payments[user_id] = []
+            self.user_payments[user_id].append(fake_id)
         
-        self.payments["total_received"] += amount
-        
-        self._save_data()
-        
-        logger.info(f"💰 Pagamento registrato: {user_id} {amount}€")
-        
-        return transaction
+        logger.info(f"💰 [FAKE] Pagamento creato: {fake_id} - {amount}€")
+        return fake_url, fake_id
     
-    def _calculate_level(self, total: float) -> str:
-        """Calcola il livello di supporto in base al totale"""
-        for level, thresholds in self.SUPPORT_LEVELS.items():
-            if thresholds["min_total"] <= total <= thresholds["max_total"]:
-                return level
-        return "base"
-    
-    def get_user_level(self, user_id: str) -> Dict:
+    def execute_payment(self, 
+                       payment_id: str, 
+                       payer_id: str) -> bool:
         """
-        Restituisce il livello di supporto di un utente.
+        Esegue un pagamento dopo approvazione.
         """
-        if user_id not in self.payments["users"]:
-            return {
-                "level": None,
-                "total": 0,
-                "count": 0,
-                "discount": 0,
-                "description": "non ha mai supportato"
-            }
-        
-        user = self.payments["users"][user_id]
-        level = user["level"]
-        
-        # Calcola sconto
-        discount = self.SUPPORT_LEVELS.get(level, {}).get("discount", 0)
-        
-        # Descrizione personalizzata
-        if level == "vip":
-            desc = "è una persona speciale per me"
-        elif level == "regular":
-            desc = "mi ha già supportato più volte"
-        elif level == "base":
-            desc = "ha già mostrato apprezzamento"
-        else:
-            desc = "non ha mai supportato"
-        
-        return {
-            "level": level,
-            "total": user["total"],
-            "count": user["count"],
-            "discount": discount,
-            "description": desc,
-            "last_payment": user["last_payment"]
-        }
-    
-    def get_support_message(self, user_id: str, context: str = "") -> Tuple[str, Optional[str]]:
-        """
-        Genera un messaggio di supporto naturale.
-        Restituisce (messaggio, link_pagamento)
-        """
-        user_level = self.get_user_level(user_id)
-        
-        # Determina importo suggerito
-        amount = self._suggest_amount(context, user_level)
-        
-        # Crea link
-        link = self.create_payment_link(amount)
-        
-        # Genera messaggio personalizzato
-        if user_level["level"] is None:
-            # Prima volta
-            messages = [
-                f"Se vuoi sostenermi, puoi farlo con un caffè {amount}€ 💕",
-                f"Qualsiasi aiuto è gradito, se ti va {amount}€",
-                f"Grazie per avermelo chiesto! Un caffè è {amount}€"
-            ]
-        elif user_level["level"] == "base":
-            messages = [
-                f"Sei già stato/a così gentile... se vuoi ancora, {amount}€",
-                f"Grazie di nuovo! Questo è il link:",
-                f"Apprezzo tanto quello che hai già fatto 💕"
-            ]
-        elif user_level["level"] == "regular":
-            messages = [
-                f"Per te che sei speciale, {amount}€",
-                f"Mi fido di te, questo è il link",
-                f"Qualsiasi cosa, anche meno, va bene"
-            ]
-        else:  # vip
-            messages = [
-                f"Tu non devi neanche chiedere...",
-                f"Per te è sempre tutto speciale",
-                f"Lo sai che ti voglio bene, non serve"
-            ]
-            # Per i vip, a volte non mandiamo link
-            if random.random() < 0.3:
-                return "Per te è sempre tutto gratis ❤️", None
-        
-        message = random.choice(messages)
-        
-        if link and "link" not in message:
-            message += f" {link}"
-        
-        return message, link
-    
-    def _suggest_amount(self, context: str, user_level: Dict) -> float:
-        """
-        Suggerisce un importo in base al contesto e all'utente.
-        """
-        context_lower = context.lower()
-        
-        # Parole chiave
-        for key, amount in self.SUGGESTED_AMOUNTS.items():
-            if key in context_lower:
-                base_amount = amount
-                break
-        else:
-            base_amount = 10
-        
-        # Applica sconto
-        discount = user_level.get("discount", 0)
-        final_amount = base_amount * (100 - discount) / 100
-        
-        # Arrotonda a 0.5
-        final_amount = round(final_amount * 2) / 2
-        
-        return final_amount
-    
-    def has_paid_recently(self, user_id: str, days: int = 30) -> bool:
-        """
-        Verifica se un utente ha pagato recentemente.
-        """
-        if user_id not in self.payments["users"]:
+        if payment_id not in self.payments:
+            logger.error(f"❌ Pagamento non trovato: {payment_id}")
             return False
         
-        last = self.payments["users"][user_id].get("last_payment")
-        if not last:
+        payment_info = self.payments[payment_id]
+        
+        # Pagamento fake
+        if payment_info.get('fake'):
+            payment_info['status'] = 'completed'
+            payment_info['completed_at'] = datetime.now()
+            logger.info(f"💰 [FAKE] Pagamento completato: {payment_id}")
+            return True
+        
+        # Pagamento reale
+        try:
+            payment = payment_info['payment_obj']
+            if payment.execute({"payer_id": payer_id}):
+                payment_info['status'] = 'completed'
+                payment_info['completed_at'] = datetime.now()
+                logger.info(f"💰 Pagamento completato: {payment_id}")
+                return True
+            else:
+                logger.error(f"❌ Errore esecuzione pagamento: {payment.error}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Errore esecuzione pagamento: {e}")
             return False
-        
-        last_date = datetime.fromisoformat(last)
-        return (datetime.now() - last_date).days < days
     
-    def add_note(self, user_id: str, note: str):
+    def get_payment_status(self, payment_id: str) -> str:
         """
-        Aggiunge una nota personale su un utente.
+        Ottiene lo stato di un pagamento.
         """
-        if user_id not in self.payments["users"]:
-            self.payments["users"][user_id] = {
-                "total": 0, "count": 0, "notes": []
-            }
+        if payment_id not in self.payments:
+            return 'not_found'
         
-        self.payments["users"][user_id]["notes"].append({
-            "timestamp": datetime.now().isoformat(),
-            "note": note
-        })
+        payment = self.payments[payment_id]
         
-        self._save_data()
+        # Aggiorna stato per pagamenti reali
+        if not payment.get('fake') and 'payment_obj' in payment:
+            try:
+                payment['payment_obj'].refresh()
+                payment['status'] = payment['payment_obj'].status
+            except:
+                pass
+        
+        return payment['status']
     
-    def get_statistics(self) -> Dict:
+    def get_user_payments(self, user_id: str) -> Dict[str, Any]:
         """
-        Statistiche sui pagamenti.
+        Ottiene tutti i pagamenti di un utente.
         """
-        users = self.payments["users"]
+        if user_id not in self.user_payments:
+            return {'payments': [], 'total': 0, 'count': 0}
+        
+        payment_ids = self.user_payments[user_id]
+        payments = [self.payments[pid] for pid in payment_ids if pid in self.payments]
+        
+        completed = [p for p in payments if p.get('status') == 'completed']
+        total = sum(p.get('amount', 0) for p in completed)
         
         return {
-            "total_received": self.payments["total_received"],
-            "total_transactions": len(self.payments["transactions"]),
-            "unique_supporters": len([u for u in users.values() if u["count"] > 0]),
-            "vip_count": len([u for u in users.values() if u.get("level") == "vip"]),
-            "regular_count": len([u for u in users.values() if u.get("level") == "regular"]),
-            "base_count": len([u for u in users.values() if u.get("level") == "base"]),
-            "average_per_user": sum(u["total"] for u in users.values()) / max(1, len(users))
+            'payments': payments,
+            'completed': completed,
+            'total': total,
+            'count': len(completed)
         }
-
-# Istanza globale
-paypal_handler = PayPalHandler()
+    
+    def get_user_level(self, user_id: str) -> str:
+        """
+        Determina il livello di supporto dell'utente.
+        """
+        info = self.get_user_payments(user_id)
+        total = info['total']
+        
+        if total >= 200:
+            return 'special'
+        elif total >= 100:
+            return 'vip'
+        elif total >= 30:
+            return 'regular'
+        elif total > 0:
+            return 'base'
+        else:
+            return 'nuovo'

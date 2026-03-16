@@ -1,34 +1,38 @@
-# ============================================
-# AI E ML
-# ============================================
+# Core AI
 google-genai>=1.0.0
-sentence-transformers>=2.2.0
-numpy>=1.24.0
 
-# ============================================
-# DATABASE VETTORIALE
-# ============================================
-chromadb>=0.4.0
-faiss-cpu>=1.7.0
+# Database e vettori
+chromadb>=0.4.22
+sqlalchemy>=2.0.0
+redis>=5.0.0
 
-# ============================================
-# PIATTAFORME
-# ============================================
-telethon>=1.34.0
+# API e web
+fastapi>=0.104.0
+uvicorn>=0.24.0
+httpx>=0.25.0
 paypalrestsdk>=1.13.0
 
-# ============================================
-# UTILITÀ
-# ============================================
+# Utilità
 python-dotenv>=1.0.0
 loguru>=0.7.0
 aiofiles>=23.0.0
 Pillow>=10.0.0
-emoji>=2.8.0
 cryptography>=41.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
 
-# ============================================
-# OPZIONALI (per Instagram)
-# ============================================
-# playwright>=1.40.0
-# instagrapi>=2.0.0
+# Monitoring
+prometheus-client>=0.19.0
+
+# Test
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.12.0
+
+# Platform
+telethon>=1.34.0
+# playwright>=1.40.0  # (opzionale per Instagram)
+
+# NLP e ML
+sentence-transformers>=2.2.0
+numpy>=1.24.0

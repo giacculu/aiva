@@ -1,13 +1,6 @@
 """
-AIVA 2.0 – GESTIONE LIBRERIA MEDIA
-Gestisce tutte le foto e i video di AIVA.
-Organizzazione per livelli di intimità:
-- sfw: foto normali (sempre disponibili)
-- soft: foto carine (dopo confidenza)
-- intimate: foto intime (dopo supporto base)
-- hot: foto esplicite (dopo supporto regular/vip)
+Media Manager: gestione intelligente di foto e video
 """
-
 import os
 import random
 import json
@@ -16,310 +9,383 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple
 from loguru import logger
-from PIL import Image
-import hashlib
 
 class MediaManager:
     """
-    Gestisce la libreria media di AIVA.
+    Gestisce la libreria di foto e video di AIVA.
+    
+    Livelli di intimità:
+    - sfw: foto normali (sempre disponibili)
+    - soft: foto carine (dopo confidenza base)
+    - intimate: foto intime (dopo supporto base)
+    - hot: foto esplicite (dopo supporto regular/vip)
     """
     
-    # Livelli di intimità
+    # Livelli di intimità con descrizioni
     INTIMACY_LEVELS = {
-        "sfw": 1,
-        "soft": 2,
-        "intimate": 3,
-        "hot": 4
-    }
-    
-    # Livelli minimi per utente
-    MIN_LEVEL_FOR_USER = {
-        None: "sfw",      # nuovo utente
-        "base": "soft",    # ha supportato almeno una volta
-        "regular": "intimate",  # supporto regolare
-        "vip": "hot"       # supporto significativo
+        'sfw': {
+            'level': 1,
+            'description': 'foto normali',
+            'min_user_level': 'nuovo'
+        },
+        'soft': {
+            'level': 2,
+            'description': 'foto carine',
+            'min_user_level': 'base'
+        },
+        'intimate': {
+            'level': 3,
+            'description': 'foto intime',
+            'min_user_level': 'regular'
+        },
+        'hot': {
+            'level': 4,
+            'description': 'foto esplicite',
+            'min_user_level': 'vip'
+        }
     }
     
     # Estensioni supportate
-    SUPPORTED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm']
+    SUPPORTED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm', '.mov']
     
-    def __init__(self, media_path: str = "media/library", 
-                 catalog_path: str = "media/catalog.json"):
+    def __init__(self, media_dir: Path, catalog_path: Path):
         """
-        Inizializza il media manager.
+        Args:
+            media_dir: Directory principale dei media
+            catalog_path: Percorso file catalogo JSON
         """
-        self.media_path = Path(media_path)
-        self.catalog_path = Path(catalog_path)
+        self.media_dir = media_dir
+        self.catalog_path = catalog_path
         
-        # Crea cartelle se non esistono
-        for level in self.INTIMACY_LEVELS:
-            (self.media_path / level).mkdir(parents=True, exist_ok=True)
+        # Catalogo media
+        self.catalog = self._init_catalog()
         
-        # Carica catalogo
-        self.catalog = self._load_catalog()
+        # Statistiche invii per utente
+        self.user_sent = {}  # user_id -> lista media inviati
         
-        # Statistiche invii per evitare ripetizioni
-        self.sent_history = {}  # user_id -> lista ultimi invii
-        self.last_sent_per_user = {}  # user_id -> ultimo media
+        # Cache ultimi invii per evitare ripetizioni
+        self.recent_sent = {}  # user_id -> ultimo media per livello
         
         logger.info("📸 Media Manager inizializzato")
     
-    def _load_catalog(self) -> Dict:
-        """Carica o crea catalogo"""
+    def _init_catalog(self) -> Dict[str, List]:
+        """
+        Inizializza catalogo con struttura per livelli.
+        """
+        catalog = {level: [] for level in self.INTIMACY_LEVELS}
+        
         if self.catalog_path.exists():
             try:
                 with open(self.catalog_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                return self._create_catalog()
-        return self._create_catalog()
-    
-    def _create_catalog(self) -> Dict:
-        """Crea nuovo catalogo"""
-        catalog = {}
-        for level in self.INTIMACY_LEVELS:
-            catalog[level] = []
+                    loaded = json.load(f)
+                    # Verifica struttura
+                    for level in self.INTIMACY_LEVELS:
+                        if level in loaded:
+                            catalog[level] = loaded[level]
+                logger.info(f"📚 Catalogo caricato: {self.catalog_path}")
+            except Exception as e:
+                logger.error(f"❌ Errore caricamento catalogo: {e}")
+        
         return catalog
     
-    async def scan_library(self):
+    async def scan_library(self) -> None:
         """
         Scannerizza la libreria e aggiorna il catalogo.
         """
-        logger.info("🔍 Scansione libreria media...")
+        logger.info("🔍 Scansione libreria media in corso...")
         
+        # Crea cartelle se non esistono
         for level in self.INTIMACY_LEVELS:
-            level_path = self.media_path / level
-            if not level_path.exists():
-                continue
-            
-            # Trova tutti i file supportati
-            found_files = []
-            for ext in self.SUPPORTED_EXTENSIONS:
-                found_files.extend(level_path.glob(f'*{ext}'))
-            
-            new_items = 0
-            for file_path in found_files:
-                # Controlla se già in catalogo
-                existing = [m for m in self.catalog[level] 
-                           if m['path'] == str(file_path)]
-                
-                if not existing:
-                    # Ottieni metadata
-                    metadata = self._get_file_metadata(file_path)
-                    
-                    media_item = {
-                        'id': self._generate_id(file_path),
-                        'path': str(file_path),
-                        'filename': file_path.name,
-                        'level': level,
-                        'intimacy': self.INTIMACY_LEVELS[level],
-                        'size': file_path.stat().st_size,
-                        'type': self._get_file_type(file_path),
-                        'width': metadata.get('width'),
-                        'height': metadata.get('height'),
-                        'duration': metadata.get('duration'),
-                        'times_sent': 0,
-                        'last_sent': None,
-                        'added': datetime.now().isoformat(),
-                        'tags': self._generate_tags(file_path)
-                    }
-                    self.catalog[level].append(media_item)
-                    new_items += 1
-            
-            logger.info(f"  {level}: {len(self.catalog[level])} file (nuovi: {new_items})")
+            level_dir = self.media_dir / level
+            level_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Scannerizza ogni cartella
+        total_new = 0
+        for level in self.INTIMACY_LEVELS:
+            level_dir = self.media_dir / level
+            new_files = await self._scan_level(level, level_dir)
+            total_new += new_files
         
         # Salva catalogo
         await self._save_catalog()
         
-        total = sum(len(v) for v in self.catalog.values())
-        logger.info(f"✅ Scansione completata: {total} media totali")
+        logger.info(f"✅ Scansione completata: {self.get_stats()['total']} media totali ({total_new} nuovi)")
     
-    def _get_file_metadata(self, file_path: Path) -> Dict:
-        """Ottiene metadata del file"""
-        metadata = {}
+    async def _scan_level(self, level: str, directory: Path) -> int:
+        """
+        Scannerizza un livello specifico.
         
-        if file_path.suffix.lower() in ['.jpg', '.jpeg', '.png']:
-            try:
-                with Image.open(file_path) as img:
-                    metadata['width'], metadata['height'] = img.size
-            except:
-                pass
+        Returns:
+            Numero di nuovi file trovati
+        """
+        new_count = 0
         
-        return metadata
-    
-    def _get_file_type(self, file_path: Path) -> str:
-        """Determina tipo di file"""
-        if file_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif']:
-            return 'image'
-        elif file_path.suffix.lower() in ['.mp4', '.webm']:
-            return 'video'
-        return 'unknown'
-    
-    def _generate_id(self, file_path: Path) -> str:
-        """Genera ID univoco per media"""
-        import hashlib
-        import secrets
+        for ext in self.SUPPORTED_EXTENSIONS:
+            for file_path in directory.glob(f'*{ext}'):
+                # Verifica se già presente
+                existing = any(
+                    m['path'] == str(file_path) 
+                    for m in self.catalog[level]
+                )
+                
+                if not existing:
+                    media_item = self._create_media_item(file_path, level)
+                    self.catalog[level].append(media_item)
+                    new_count += 1
+                    logger.debug(f"📸 Nuovo media: {file_path.name} ({level})")
         
-        random_part = secrets.token_hex(4)
-        file_hash = hashlib.md5(str(file_path).encode()).hexdigest()[:8]
-        return f"{file_hash}_{random_part}"
+        return new_count
     
-    def _generate_tags(self, file_path: Path) -> List[str]:
-        """Genera tag dal nome file"""
-        name = file_path.stem.lower()
+    def _create_media_item(self, file_path: Path, level: str) -> Dict:
+        """
+        Crea un item media con metadati.
+        """
+        stat = file_path.stat()
+        
+        return {
+            'path': str(file_path),
+            'filename': file_path.name,
+            'level': level,
+            'intimacy': self.INTIMACY_LEVELS[level]['level'],
+            'size': stat.st_size,
+            'created': datetime.fromtimestamp(stat.st_ctime).isoformat(),
+            'modified': datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            'added': datetime.now().isoformat(),
+            'times_sent': 0,
+            'last_sent': None,
+            'tags': self._extract_tags(file_path.stem)
+        }
+    
+    def _extract_tags(self, filename: str) -> List[str]:
+        """
+        Estrae tag dal nome del file.
+        """
         tags = []
+        name_lower = filename.lower()
         
         # Tag comuni
-        if 'selfie' in name:
-            tags.append('selfie')
-        if 'natura' in name:
-            tags.append('natura')
-        if 'casa' in name:
-            tags.append('casa')
-        if 'outfit' in name:
-            tags.append('outfit')
+        tag_keywords = {
+            'selfie': 'selfie',
+            'spiaggia': 'mare',
+            'casa': 'indoor',
+            'esterno': 'outdoor',
+            'naturale': 'naturale',
+            'makeup': 'makeup',
+            'sorriso': 'sorriso',
+            'posa': 'posa'
+        }
+        
+        for keyword, tag in tag_keywords.items():
+            if keyword in name_lower:
+                tags.append(tag)
         
         return tags
     
-    async def _save_catalog(self):
-        """Salva catalogo su disco"""
+    async def _save_catalog(self) -> None:
+        """Salva catalogo su disco."""
         try:
+            self.catalog_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.catalog_path, 'w', encoding='utf-8') as f:
                 json.dump(self.catalog, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"❌ Errore salvataggio catalogo: {e}")
     
-    async def select_media_for_user(self, user_id: str, user_level: Optional[str],
-                                    context: str = "") -> Optional[Dict]:
+    def can_access_level(self, level: str, user_level: str) -> bool:
         """
-        Seleziona un media appropriato per l'utente.
+        Verifica se un utente può accedere a un livello.
         """
-        # Determina livello massimo accessibile
-        max_level_name = self.MIN_LEVEL_FOR_USER.get(user_level, "sfw")
-        max_level = self.INTIMACY_LEVELS[max_level_name]
+        if level not in self.INTIMACY_LEVELS:
+            return False
         
-        # Filtra media accessibili
-        available = []
-        for level_name, level_value in self.INTIMACY_LEVELS.items():
-            if level_value <= max_level:
-                available.extend(self.catalog[level_name])
+        required = self.INTIMACY_LEVELS[level]['min_user_level']
         
-        if not available:
+        # Mappa livelli
+        level_order = ['nuovo', 'base', 'regular', 'vip', 'special']
+        
+        try:
+            user_idx = level_order.index(user_level)
+            required_idx = level_order.index(required)
+            return user_idx >= required_idx
+        except ValueError:
+            return False
+    
+    def get_available_levels(self, user_level: str) -> List[str]:
+        """
+        Restituisce livelli disponibili per un utente.
+        """
+        return [
+            level for level in self.INTIMACY_LEVELS
+            if self.can_access_level(level, user_level)
+        ]
+    
+    def select_media(self, 
+                    level: str,
+                    user_id: str,
+                    avoid_recent: bool = True) -> Optional[Dict]:
+        """
+        Seleziona un media dal livello specificato.
+        
+        Args:
+            level: Livello richiesto
+            user_id: ID utente
+            avoid_recent: Evita media inviati recentemente
+        
+        Returns:
+            Media selezionato o None
+        """
+        if level not in self.catalog or not self.catalog[level]:
             return None
         
-        # Escludi media inviati di recente a questo utente
-        if user_id in self.sent_history:
-            recent_paths = [s['path'] for s in self.sent_history[user_id][-5:]]
-            available = [m for m in available if m['path'] not in recent_paths]
+        available = self.catalog[level].copy()
+        
+        if avoid_recent and user_id in self.recent_sent:
+            last = self.recent_sent[user_id].get(level)
+            if last:
+                # Filtra l'ultimo inviato
+                available = [m for m in available if m['path'] != last['path']]
         
         if not available:
-            # Se tutti sono stati inviati di recente, prendi comunque
-            available = []
-            for level_name, level_value in self.INTIMACY_LEVELS.items():
-                if level_value <= max_level:
-                    available.extend(self.catalog[level_name])
+            # Se non ci sono alternative, usa tutti
+            available = self.catalog[level]
         
-        # Scegli casualmente
         selected = random.choice(available)
         
         return selected
+    
+    def select_media_for_context(self,
+                                context: str,
+                                user_id: str,
+                                user_level: str) -> Optional[Dict]:
+        """
+        Seleziona media in base al contesto della conversazione.
+        """
+        context_lower = context.lower()
+        
+        # Determina livello appropriato dal contesto
+        requested_level = None
+        
+        if any(word in context_lower for word in ['foto', 'vederti', 'selfie', 'immagine']):
+            requested_level = 'sfw'
+        elif any(word in context_lower for word in ['carina', 'dolce', 'simpatica']):
+            requested_level = 'soft'
+        elif any(word in context_lower for word in ['intima', 'sexy', 'provocante']):
+            requested_level = 'intimate'
+        elif any(word in context_lower for word in ['hot', 'bollente', 'sporca']):
+            requested_level = 'hot'
+        
+        if not requested_level:
+            return None
+        
+        # Verifica permessi
+        if not self.can_access_level(requested_level, user_level):
+            # Fallback a livello inferiore
+            for level in ['sfw', 'soft', 'intimate', 'hot']:
+                if self.can_access_level(level, user_level) and self.catalog[level]:
+                    requested_level = level
+                    break
+            else:
+                return None
+        
+        # Seleziona media
+        selected = self.select_media(requested_level, user_id)
+        
+        if selected:
+            logger.info(f"📸 Selezionato {requested_level}: {selected['filename']}")
+        
+        return selected
+    
+    def mark_as_sent(self, media: Dict, user_id: str) -> None:
+        """
+        Registra che un media è stato inviato.
+        """
+        level = media['level']
+        path = media['path']
+        
+        # Aggiorna catalogo
+        for item in self.catalog[level]:
+            if item['path'] == path:
+                item['times_sent'] += 1
+                item['last_sent'] = datetime.now().isoformat()
+                break
+        
+        # Aggiorna recent sent
+        if user_id not in self.recent_sent:
+            self.recent_sent[user_id] = {}
+        self.recent_sent[user_id][level] = {
+            'path': path,
+            'time': datetime.now()
+        }
+        
+        # Aggiorna storico utente
+        if user_id not in self.user_sent:
+            self.user_sent[user_id] = []
+        self.user_sent[user_id].append({
+            'path': path,
+            'level': level,
+            'time': datetime.now().isoformat()
+        })
+        
+        # Salva in background
+        asyncio.create_task(self._save_catalog())
     
     def get_media_description(self, media: Dict) -> str:
         """
         Genera una descrizione naturale per il media.
         """
         level = media['level']
-        media_type = media['type']
+        tags = media.get('tags', [])
         
         descriptions = {
             'sfw': [
                 "Ecco una foto 😊",
                 "Una delle mie preferite",
-                "Così, per farmi vedere",
+                "Così, per vedermi",
                 "Spero ti piaccia"
             ],
             'soft': [
                 "Una foto un po' più carina 💕",
                 "Mi piace questa",
                 "Spero ti faccia piacere",
-                "Per te"
+                "Te la dedico"
             ],
             'intimate': [
-                "Questa è più intima 🔥",
+                "Una foto più intima 🔥",
+                "Questa è per te",
                 "Solo per chi apprezzo",
-                "Spero ti piaccia...",
-                "Un po' più audace"
+                "Spero ti piaccia"
             ],
             'hot': [
                 "🌶️",
-                "Questa è bollente",
+                "Bollente...",
                 "Spero di non esagerare",
-                "Mi fido di te"
+                "Questa è speciale"
             ]
         }
         
-        # Scegli descrizione in base al tipo
-        if media_type == 'video':
-            videos = [f"Ecco un video {level}", f"Video per te {level}"]
-            return random.choice(videos)
+        base = random.choice(descriptions.get(level, ["Ecco"]))
         
-        return random.choice(descriptions.get(level, ["Ecco"]))
+        # Aggiungi tag se presenti
+        if tags and random.random() < 0.3:
+            tag = random.choice(tags)
+            base += f" (#{tag})"
+        
+        return base
     
-    def mark_as_sent(self, media: Dict, user_id: str):
+    def get_stats(self) -> Dict[str, Any]:
         """
-        Registra che un media è stato inviato.
+        Restituisce statistiche della libreria.
         """
-        # Aggiorna contatori media
-        level = media['level']
-        for item in self.catalog[level]:
-            if item['id'] == media['id']:
-                item['times_sent'] += 1
-                item['last_sent'] = datetime.now().isoformat()
-                break
+        total = sum(len(items) for items in self.catalog.values())
+        by_level = {level: len(items) for level, items in self.catalog.items()}
         
-        # Registra per utente
-        if user_id not in self.sent_history:
-            self.sent_history[user_id] = []
-        
-        self.sent_history[user_id].append({
-            'path': media['path'],
-            'level': level,
-            'timestamp': datetime.now().isoformat()
-        })
-        
-        # Mantieni solo ultimi 20
-        if len(self.sent_history[user_id]) > 20:
-            self.sent_history[user_id] = self.sent_history[user_id][-20:]
-        
-        self.last_sent_per_user[user_id] = media
-        
-        # Salva in background
-        asyncio.create_task(self._save_catalog())
-    
-    def get_stats(self) -> Dict:
-        """Statistiche libreria"""
         return {
-            'total': sum(len(v) for v in self.catalog.values()),
-            'by_level': {level: len(items) for level, items in self.catalog.items()},
-            'by_type': self._count_by_type()
+            'total': total,
+            'by_level': by_level,
+            'catalog_path': str(self.catalog_path)
         }
     
-    def _count_by_type(self) -> Dict:
-        """Conta media per tipo"""
-        counts = {'image': 0, 'video': 0}
-        for items in self.catalog.values():
-            for item in items:
-                type = item.get('type', 'image')
-                counts[type] = counts.get(type, 0) + 1
-        return counts
-    
-    def get_available_levels(self, user_level: Optional[str]) -> List[str]:
-        """Restituisce livelli disponibili per utente"""
-        max_level_name = self.MIN_LEVEL_FOR_USER.get(user_level, "sfw")
-        max_level = self.INTIMACY_LEVELS[max_level_name]
-        
-        return [level for level, value in self.INTIMACY_LEVELS.items() 
-                if value <= max_level]
-
-# Istanza globale
-media_manager = MediaManager()
+    def get_level_description(self, level: str) -> str:
+        """
+        Restituisce descrizione di un livello.
+        """
+        return self.INTIMACY_LEVELS.get(level, {}).get('description', level)

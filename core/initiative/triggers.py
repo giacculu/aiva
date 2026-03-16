@@ -1,144 +1,224 @@
 """
-AIVA 2.0 – TRIGGER EMOTIVI PER L'INIZIATIVA
-Cosa spinge AIVA a iniziare una conversazione?
-- Emozioni forti
-- Ricordi
-- Noia
-- Preoccupazione
+Trigger per iniziative: cosa spinge AIVA a scrivere
 """
-
-import numpy as np
-from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
+from datetime import datetime, timedelta
 from loguru import logger
 import random
 
-class EmotionalTriggers:
+class InitiativeTriggers:
     """
-    Gestisce i trigger emotivi che spingono AIVA a iniziare conversazioni.
+    Gestisce i trigger che possono spingere AIVA a scrivere.
+    - Eventi esterni (ora, data)
+    - Stati emotivi
+    - Ricordi
+    - Associazioni casuali
     """
-    
-    # Trigger con descrizione
-    TRIGGERS = {
-        "felice": {
-            "condition": lambda pad: pad.get("P", 0) > 0.7,
-            "message": "Sono così felice che ho voglia di condividerlo con te",
-            "weight": 1.5
-        },
-        "triste": {
-            "condition": lambda pad: pad.get("P", 0) < -0.5,
-            "message": "Mi sento giù, ho bisogno di parlare con qualcuno",
-            "weight": 1.3
-        },
-        "affettuosa": {
-            "condition": lambda pad: pad.get("P", 0) > 0.5 and pad.get("A", 0) < 0.3,
-            "message": "Sto pensando a te, mi sei venuto in mente",
-            "weight": 1.4
-        },
-        "curiosa": {
-            "condition": lambda pad: pad.get("A", 0) > 0.5,
-            "message": "Ho una curiosità, chissà se tu puoi aiutarmi",
-            "weight": 1.2
-        },
-        "nostalgica": {
-            "condition": lambda pad: pad.get("P", 0) < 0.3 and pad.get("A", 0) < 0,
-            "message": "Mi è tornato in mente un bel ricordo",
-            "weight": 1.1
-        },
-        "sola": {
-            "condition": lambda pad: pad.get("P", 0) < 0.2 and pad.get("D", 0) < 0,
-            "message": "Mi sento un po' sola, tu come stai?",
-            "weight": 1.2
-        },
-        "ricordo": {
-            "condition": None,  # trigger basato su memoria, non su PAD
-            "message": "Mi è tornato in mente quando...",
-            "weight": 1.0
-        }
-    }
     
     def __init__(self):
-        logger.info("🎭 Emotional Triggers inizializzato")
+        self.triggers_history = []
+        
+        # Trigger predefiniti
+        self.time_triggers = self._init_time_triggers()
+        self.event_triggers = self._init_event_triggers()
+        self.memory_triggers = []
+        
+        logger.debug("🎯 Trigger iniziative inizializzati")
     
-    def check_triggers(self, pad_state: Dict, memories: List[Dict]) -> List[Dict]:
+    def _init_time_triggers(self) -> List[Dict]:
+        """Inizializza trigger basati sul tempo."""
+        return [
+            {
+                'name': 'mattina_presto',
+                'hours': [6, 7, 8],
+                'message': 'Buongiorno! ☀️',
+                'condition': lambda h: h in [6, 7, 8]
+            },
+            {
+                'name': 'pausa_pranzo',
+                'hours': [12, 13, 14],
+                'message': 'Buon pranzo! 🍝',
+                'condition': lambda h: h in [12, 13, 14]
+            },
+            {
+                'name': 'sera',
+                'hours': [20, 21, 22],
+                'message': 'Buona serata! 🌆',
+                'condition': lambda h: h in [20, 21, 22]
+            },
+            {
+                'name': 'notte',
+                'hours': [23, 0, 1],
+                'message': 'Sogni d\'oro! 🌙',
+                'condition': lambda h: h in [23, 0, 1]
+            }
+        ]
+    
+    def _init_event_triggers(self) -> List[Dict]:
+        """Inizializza trigger basati su eventi."""
+        return [
+            {
+                'name': 'weekend',
+                'days': [5, 6],  # venerdì, sabato
+                'message': 'Finalmente weekend! 🎉',
+                'condition': lambda d: d in [5, 6]
+            },
+            {
+                'name': 'lunedi',
+                'days': [0],
+                'message': 'Buon inizio settimana! 💪',
+                'condition': lambda d: d == 0
+            },
+            {
+                'name': 'pioggia',
+                'message': 'Che pioggia oggi... ☔',
+                'requires_weather': True
+            },
+            {
+                'name': 'sole',
+                'message': 'Che bella giornata di sole! ☀️',
+                'requires_weather': True
+            }
+        ]
+    
+    def check_triggers(self, 
+                      user_id: str,
+                      relationship_level: str,
+                      last_interaction: Optional[datetime],
+                      current_mood: str) -> List[Dict]:
         """
-        Controlla quali trigger sono attivi.
+        Verifica quali trigger sono attivi per un utente.
+        
+        Returns:
+            Lista di trigger attivi
         """
         active = []
+        now = datetime.now()
+        hour = now.hour
+        weekday = now.weekday()
         
-        # Trigger basati su PAD
-        for trigger_name, trigger_data in self.TRIGGERS.items():
-            if trigger_data["condition"] and trigger_data["condition"](pad_state):
+        # Trigger temporali
+        for trigger in self.time_triggers:
+            if trigger['condition'](hour):
+                # Aggiungi probabilità in base alla relazione
+                prob = self._get_trigger_probability(trigger, relationship_level)
+                if random.random() < prob:
+                    active.append({
+                        'type': 'time',
+                        'name': trigger['name'],
+                        'message': trigger['message'],
+                        'probability': prob
+                    })
+        
+        # Trigger basati su giorno
+        for trigger in self.event_triggers:
+            if 'days' in trigger and weekday in trigger['days']:
+                prob = self._get_trigger_probability(trigger, relationship_level)
+                if random.random() < prob:
+                    active.append({
+                        'type': 'event',
+                        'name': trigger['name'],
+                        'message': trigger['message'],
+                        'probability': prob
+                    })
+        
+        # Trigger basati su umore
+        mood_triggers = self._get_mood_triggers(current_mood)
+        active.extend(mood_triggers)
+        
+        # Trigger basati su tempo dall'ultima interazione
+        if last_interaction:
+            days_since = (now - last_interaction).days
+            if days_since >= 3:
                 active.append({
-                    "name": trigger_name,
-                    "message": trigger_data["message"],
-                    "weight": trigger_data["weight"],
-                    "source": "pad"
+                    'type': 'miss_you',
+                    'name': 'miss_you',
+                    'message': random.choice([
+                        "Non ci sentiamo da un po'...",
+                        "Mi sei mancato/a!",
+                        "Come stai? È da un po' che non ci sentiamo"
+                    ]),
+                    'probability': min(0.5, days_since * 0.1)
                 })
-        
-        # Trigger basati su ricordi
-        if memories and random.random() < 0.3:  # 30% di chance se ci sono ricordi
-            # Scegli un ricordo casuale
-            memory = random.choice(memories)
-            active.append({
-                "name": "ricordo",
-                "message": f"Mi è tornato in mente {memory.get('event', 'qualcosa')}",
-                "weight": self.TRIGGERS["ricordo"]["weight"],
-                "source": "memory",
-                "memory": memory
-            })
         
         return active
     
-    def get_strongest_trigger(self, pad_state: Dict, memories: List[Dict]) -> Optional[Dict]:
+    def _get_trigger_probability(self, trigger: Dict, relationship_level: str) -> float:
         """
-        Restituisce il trigger più forte attivo.
+        Calcola probabilità che un trigger scatti.
         """
-        active = self.check_triggers(pad_state, memories)
+        base_prob = 0.3  # Probabilità base
         
-        if not active:
-            return None
+        # Aumenta per relazioni più strette
+        level_multipliers = {
+            'vip': 2.0,
+            'regular': 1.5,
+            'base': 1.0,
+            None: 0.5
+        }
         
-        # Scegli in base ai pesi
-        weights = [t["weight"] for t in active]
-        total = sum(weights)
-        probs = [w/total for w in weights]
-        
-        return np.random.choice(active, p=probs)
+        return base_prob * level_multipliers.get(relationship_level, 0.5)
     
-    def get_reason(self, pad_state: Dict) -> str:
+    def _get_mood_triggers(self, current_mood: str) -> List[Dict]:
         """
-        Restituisce una ragione per l'iniziativa (per il diario).
+        Trigger basati sull'umore attuale.
         """
-        if pad_state.get("P", 0) > 0.7:
-            return "ero così felice che ho voluto condividerlo"
-        elif pad_state.get("P", 0) < -0.5:
-            return "mi sentivo giù e avevo bisogno di parlare"
-        elif pad_state.get("P", 0) > 0.5 and pad_state.get("A", 0) < 0.3:
-            return "stavo pensando a lui/lei"
-        elif pad_state.get("A", 0) > 0.5:
-            return "ero curiosa"
-        elif pad_state.get("P", 0) < 0.3 and pad_state.get("A", 0) < 0:
-            return "mi è tornato un ricordo"
-        elif pad_state.get("P", 0) < 0.2 and pad_state.get("D", 0) < 0:
-            return "mi sentivo sola"
-        else:
-            return "non so, avevo voglia di parlare"
+        mood_map = {
+            'felice': [
+                {'name': 'condivisione_felicità', 'message': "Oggi sono proprio di buon umore! 😊"}
+            ],
+            'curiosa': [
+                {'name': 'curiosità', 'message': "Ho pensato a una cosa curiosa..."}
+            ],
+            'affettuosa': [
+                {'name': 'affetto', 'message': "Un pensiero affettuoso per te 💕"}
+            ],
+            'malinconica': [
+                {'name': 'malinconia', 'message': "Oggi sono un po' malinconica..."}
+            ]
+        }
+        
+        triggers = []
+        for trigger in mood_map.get(current_mood, []):
+            triggers.append({
+                'type': 'mood',
+                'name': trigger['name'],
+                'message': trigger['message'],
+                'probability': 0.4
+            })
+        
+        return triggers
     
-    def get_trigger_probability(self, pad_state: Dict, hours_since_last: float) -> float:
+    def get_random_thought(self, user_id: str, context: Optional[Dict] = None) -> Optional[str]:
         """
-        Calcola la probabilità che scatti un trigger.
+        Genera un pensiero casuale che potrebbe portare a un messaggio.
         """
-        prob = 0.1  # base
+        thoughts = [
+            "Mi è venuto in mente un film che ho visto",
+            "Stavo pensando a cosa fare questo weekend",
+            "Ho ascoltato una canzone bellissima",
+            "Oggi ho incontrato un gatto simpaticissimo",
+            "Mi chiedo come stai passando la giornata",
+            "Ho sognato una cosa strana stanotte",
+            "Che tempo fa da te?",
+            "Mi piacerebbe sapere cosa stai facendo"
+        ]
         
-        # Più probabile con emozioni forti
-        prob += abs(pad_state.get("P", 0)) * 0.3
-        prob += pad_state.get("A", 0) * 0.2
+        if random.random() < 0.3:  # 30% di chance di avere un pensiero
+            return random.choice(thoughts)
         
-        # Più probabile se è passato molto tempo
-        prob += min(0.5, hours_since_last / 48)  # max 0.5 dopo 48h
+        return None
+    
+    def register_trigger_used(self, trigger: Dict) -> None:
+        """
+        Registra che un trigger è stato usato.
+        """
+        self.triggers_history.append({
+            'timestamp': datetime.now(),
+            'trigger': trigger['name'],
+            'type': trigger['type']
+        })
         
-        return min(0.9, max(0.05, prob))
-
-# Istanza globale
-emotional_triggers = EmotionalTriggers()
+        # Mantieni solo ultimi 100
+        if len(self.triggers_history) > 100:
+            self.triggers_history = self.triggers_history[-100:]
